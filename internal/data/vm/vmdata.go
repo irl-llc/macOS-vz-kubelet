@@ -2,15 +2,13 @@ package vm
 
 import (
 	"sync"
-	"sync/atomic"
 
 	"k8s.io/apimachinery/pkg/types"
 )
 
 // VirtualMachineData stores the information about macOS virtual machines
 type VirtualMachineData struct {
-	data    sync.Map // map[types.NamespacedName]VirtualMachineInfo (podNamespace/podName -> VirtualMachineInfo)
-	counter int32    // number of virtual machines stored
+	data sync.Map // map[types.NamespacedName]VirtualMachineInfo (podNamespace/podName -> VirtualMachineInfo)
 }
 
 // GetVirtualMachineInfo retrieves the VirtualMachineInfo for a specific pod.
@@ -43,19 +41,13 @@ func (d *VirtualMachineData) UpdateVirtualMachineInfo(podNamespace, podName stri
 func (d *VirtualMachineData) GetOrCreateVirtualMachineInfo(podNamespace, podName string, info VirtualMachineInfo) (VirtualMachineInfo, bool) {
 	key := types.NamespacedName{Namespace: podNamespace, Name: podName}
 	val, loaded := d.data.LoadOrStore(key, &info)
-	if !loaded {
-		d.incrementCounter()
-	}
 	return *val.(*VirtualMachineInfo), loaded
 }
 
 // RemoveVirtualMachineInfo removes the VirtualMachineInfo for a specific pod.
 func (d *VirtualMachineData) RemoveVirtualMachineInfo(podNamespace, podName string) {
 	key := types.NamespacedName{Namespace: podNamespace, Name: podName}
-	_, loaded := d.data.LoadAndDelete(key)
-	if loaded {
-		d.decrementCounter()
-	}
+	_, _ = d.data.LoadAndDelete(key)
 }
 
 // ListVirtualMachines returns a map of all virtual machines stored.
@@ -66,20 +58,4 @@ func (d *VirtualMachineData) ListVirtualMachines() map[types.NamespacedName]Virt
 		return true
 	})
 	return vmMap
-}
-
-// Count returns the number of virtual machines stored.
-// It is safe to call concurrently.
-func (d *VirtualMachineData) Count() int32 {
-	return atomic.LoadInt32(&d.counter)
-}
-
-// incrementCounter increments the number of virtual machines stored.
-func (d *VirtualMachineData) incrementCounter() {
-	atomic.AddInt32(&d.counter, 1)
-}
-
-// decrementCounter decrements the number of virtual machines stored.
-func (d *VirtualMachineData) decrementCounter() {
-	atomic.AddInt32(&d.counter, -1)
 }

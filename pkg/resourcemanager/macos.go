@@ -3,10 +3,12 @@ package resourcemanager
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -63,6 +65,7 @@ type MacOSClient struct {
 
 	eventRecorder              event.EventRecorder
 	networkInterfaceIdentifier string
+	vmPermits                  chan struct{}
 }
 
 // NewMacOSClient initializes a new MacOSClient instance.
@@ -78,6 +81,7 @@ func NewMacOSClient(ctx context.Context, eventRecorder event.EventRecorder, netw
 		eventRecorder:              eventRecorder,
 		networkInterfaceIdentifier: networkInterfaceIdentifier,
 		downloadManager:            downloader.NewManager(eventRecorder, cachePath),
+		vmPermits:                  make(chan struct{}, MaxVirtualMachines),
 	}
 }
 
@@ -119,11 +123,11 @@ func (c *MacOSClient) handleVirtualMachineCreation(ctx context.Context, params V
 	// Manage download
 	downloadCtx, cancel := context.WithCancel(ctx) // create a new context to manage the download
 	defer cancel()
-	_, updated := c.data.UpdateVirtualMachineInfo(params.Namespace, params.Name, func(i vmdata.VirtualMachineInfo) vmdata.VirtualMachineInfo {
+	_, found := c.data.UpdateVirtualMachineInfo(params.Namespace, params.Name, func(i vmdata.VirtualMachineInfo) vmdata.VirtualMachineInfo {
 		i.DownloadCancelFunc = cancel
 		return i
 	})
-	if !updated {
+	if !found {
 		logger.Debug("virtual machine info expired")
 		return
 	}
@@ -143,9 +147,12 @@ func (c *MacOSClient) handleVirtualMachineCreation(ctx context.Context, params V
 	logger.Debug(cfg)
 
 	// Wait until resources are available to proceed with the virtual machine creation
-	if err = c.waitForCreationProceed(ctx); err != nil {
+	guard, acquireErr := c.acquirePermit(ctx, types.NamespacedName{Namespace: params.Namespace, Name: params.Name})
+	if acquireErr != nil {
+		err = acquireErr
 		return
 	}
+	defer guard.Release(ctx)
 
 	// Create the virtual machine instance
 	vm, err := c.createVirtualMachineInstance(ctx, cfg, params)
@@ -159,6 +166,7 @@ func (c *MacOSClient) handleVirtualMachineCreation(ctx context.Context, params V
 		c.eventRecorder.FailedToStartContainer(ctx, params.ContainerName, err)
 		return
 	}
+	guard.Commit()
 	c.eventRecorder.StartedContainer(ctx, params.ContainerName)
 
 	if params.PostStartAction == nil {
@@ -175,37 +183,15 @@ func (c *MacOSClient) handleVirtualMachineCreation(ctx context.Context, params V
 
 // finalizeVirtualMachineInfo updates the virtual machine info with the final result of the creation process.
 func (c *MacOSClient) finalizeVirtualMachineInfo(ctx context.Context, params VirtualMachineParams, err error) {
-	_, updated := c.data.UpdateVirtualMachineInfo(params.Namespace, params.Name, func(i vmdata.VirtualMachineInfo) vmdata.VirtualMachineInfo {
+	_, found := c.data.UpdateVirtualMachineInfo(params.Namespace, params.Name, func(i vmdata.VirtualMachineInfo) vmdata.VirtualMachineInfo {
 		i.DownloadCancelFunc = nil // indicate that download is no longer in progress
 		if err != nil {
 			i.Resource.SetError(err)
 		}
 		return i
 	})
-	if !updated {
+	if !found {
 		log.G(ctx).Debug("virtual machine info expired")
-	}
-}
-
-// waitForCreationProceed blocks until it's safe to proceed with the virtual machine creation.
-func (c *MacOSClient) waitForCreationProceed(ctx context.Context) error {
-	// Since kubelet limits number of pods based on the Virtualization.framework limits already,
-	// it's safe to assume that the reason for not being able to create a new VM is that we have
-	// some of them in Terminating state (graceful shutdown) and we need to wait for them to finish.
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		if c.canProceedWithVirtualMachineCreation() {
-			return nil
-		}
-
-		log.G(ctx).Debug("waiting for resources to be available")
-		select {
-		case <-ticker.C:
-			continue
-		case <-ctx.Done():
-			return ctx.Err()
-		}
 	}
 }
 
@@ -271,6 +257,7 @@ func (c *MacOSClient) DeleteVirtualMachine(ctx context.Context, namespace string
 		return nil
 	}
 	defer c.data.RemoveVirtualMachineInfo(namespace, name)
+	defer c.releasePermit(ctx, types.NamespacedName{Namespace: namespace, Name: name})
 
 	if info.DownloadCancelFunc != nil {
 		info.DownloadCancelFunc()
@@ -412,10 +399,15 @@ func (c *MacOSClient) ExecInVirtualMachine(ctx context.Context, namespace, name 
 		_ = client.Close()
 	}()
 
+	_, sessionSpan := trace.StartSpan(ctx, "MacOSClient.SSHNewSession")
 	session, err := client.NewSession()
 	if err != nil {
+		sessionSpan.SetStatus(err)
+		sessionSpan.End()
 		return err
 	}
+	sessionSpan.SetStatus(nil)
+	sessionSpan.End()
 	defer func() {
 		_ = session.Close()
 	}()
@@ -433,11 +425,20 @@ func (c *MacOSClient) ExecInVirtualMachine(ctx context.Context, namespace, name 
 	}()
 
 	macOSSession := vzssh.NewMacOSSession(session, attach, stdinPipe)
-	if err = macOSSession.SetupSessionIO(ctx); err != nil {
+	setupCtx, setupSpan := trace.StartSpan(ctx, "MacOSClient.SSHSetupSessionIO")
+	if err = macOSSession.SetupSessionIO(setupCtx); err != nil {
+		setupSpan.SetStatus(err)
+		setupSpan.End()
 		return fmt.Errorf("failed to setup session IO: %w", err)
 	}
+	setupSpan.SetStatus(nil)
+	setupSpan.End()
 
-	return macOSSession.ExecuteCommand(ctx, info.Resource.Env(), cmd)
+	execCtx, execSpan := trace.StartSpan(ctx, "MacOSClient.SSHExecuteCommand")
+	err = macOSSession.ExecuteCommand(execCtx, info.Resource.Env(), cmd)
+	execSpan.SetStatus(err)
+	execSpan.End()
+	return err
 }
 
 // GetVirtualMachineStats retrieves the stats of the specified virtual machine.
@@ -556,13 +557,6 @@ func (c *MacOSClient) getVirtualMachineInfo(ctx context.Context, namespace, name
 	return info, nil
 }
 
-// canProceedWithVirtualMachineCreation determines if it's safe to proceed with the virtual machine creation.
-// It checks whether the current number of added virtual machines has not exceeded the limit.
-func (c *MacOSClient) canProceedWithVirtualMachineCreation() bool {
-	// the check happens when new VM info is added
-	return c.data.Count() <= MaxVirtualMachines
-}
-
 // setupVM creates a new virtual machine instance with the given parameters.
 func setupVM(ctx context.Context, cfg config.MacPlatformConfigurationOptions, uid string, cpu uint, memorySize uint64, networkInterfaceIdentifier string, mounts []volumes.Mount) (*vm.VirtualMachineInstance, error) {
 	log.G(ctx).Debugf("Creating virtual machine with CPU: %d, memory: %d, network interface: %s, mounts: %+v", cpu, memorySize, networkInterfaceIdentifier, mounts)
@@ -591,37 +585,76 @@ func establishVirtualMachineSshConn(ctx context.Context, vm resource.MacOSVirtua
 		return nil, errdefs.InvalidInputf("virtual machine does not have an IP address")
 	}
 
-	sshUser, sshPassword, err := getSSHCredentials()
+	// Setup SSH client configuration
+	sshUser, sshAuth, err := getSSHAuthMethods()
 	if err != nil {
 		return nil, err
 	}
-
-	// Setup SSH client configuration
 	config := &ssh.ClientConfig{
-		User: sshUser,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(sshPassword),
-		},
+		User:            sshUser,
+		Auth:            sshAuth,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	// Establish SSH connection with keepalive
+	if kexList := strings.TrimSpace(os.Getenv("VZ_SSH_KEX_ALGORITHMS")); kexList != "" {
+		config.KeyExchanges = strings.Split(kexList, ",")
+	}
+
 	conn, err := vzssh.DialContext(ctx, "tcp", vm.IPAddress()+":22", config)
 	if err != nil {
 		return nil, err
 	}
 
 	go vzssh.SendKeepalive(ctx, conn)
-
 	return conn, nil
 }
 
-// getSSHCredentials retrieves SSH credentials from environment variables.
-func getSSHCredentials() (string, string, error) {
+// getSSHAuthMethods retrieves SSH auth methods from environment variables.
+func getSSHAuthMethods() (string, []ssh.AuthMethod, error) {
 	sshUser := os.Getenv("VZ_SSH_USER")
-	sshPassword := os.Getenv("VZ_SSH_PASSWORD")
-	if sshUser == "" || sshPassword == "" {
-		return "", "", errdefs.InvalidInputf("VZ_SSH_USER and VZ_SSH_PASSWORD env variables are required")
+	if sshUser == "" {
+		return "", nil, errdefs.InvalidInputf("VZ_SSH_USER env variable is required")
 	}
-	return sshUser, sshPassword, nil
+
+	var auth []ssh.AuthMethod
+
+	privateKey := ""
+	if keyBase64 := strings.TrimSpace(os.Getenv("VZ_SSH_PRIVATE_KEY_BASE64")); keyBase64 != "" {
+		keyData, err := base64.StdEncoding.DecodeString(keyBase64)
+		if err != nil {
+			return "", nil, errdefs.InvalidInputf("failed to decode VZ_SSH_PRIVATE_KEY_BASE64: %v", err)
+		}
+		privateKey = string(keyData)
+	} else if keyPath := strings.TrimSpace(os.Getenv("VZ_SSH_PRIVATE_KEY_PATH")); keyPath != "" {
+		keyData, err := os.ReadFile(keyPath)
+		if err != nil {
+			return "", nil, errdefs.InvalidInputf("failed to read VZ_SSH_PRIVATE_KEY_PATH: %v", err)
+		}
+		privateKey = string(keyData)
+	}
+
+	if privateKey != "" {
+		var signer ssh.Signer
+		var err error
+
+		if passphrase := os.Getenv("VZ_SSH_PRIVATE_KEY_PASSPHRASE"); passphrase != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase([]byte(privateKey), []byte(passphrase))
+		} else {
+			signer, err = ssh.ParsePrivateKey([]byte(privateKey))
+		}
+		if err != nil {
+			return "", nil, errdefs.InvalidInputf("failed to parse VZ_SSH_PRIVATE_KEY: %v", err)
+		}
+		auth = append(auth, ssh.PublicKeys(signer))
+	}
+
+	if sshPassword := os.Getenv("VZ_SSH_PASSWORD"); sshPassword != "" {
+		auth = append(auth, ssh.Password(sshPassword))
+	}
+
+	if len(auth) == 0 {
+		return "", nil, errdefs.InvalidInputf("VZ_SSH_PRIVATE_KEY_BASE64, VZ_SSH_PRIVATE_KEY_PATH, or VZ_SSH_PASSWORD env variable is required")
+	}
+
+	return sshUser, auth, nil
 }

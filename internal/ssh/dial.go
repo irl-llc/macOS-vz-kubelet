@@ -6,6 +6,8 @@ import (
 	"net"
 
 	"github.com/virtual-kubelet/virtual-kubelet/log"
+	"github.com/virtual-kubelet/virtual-kubelet/trace"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -18,11 +20,20 @@ import (
 // any expiration of the context will not affect the connection.
 //
 // See [Dial] for additional information.
-func DialContext(ctx context.Context, network, addr string, config *ssh.ClientConfig) (*ssh.Client, error) {
+func DialContext(ctx context.Context, network, addr string, config *ssh.ClientConfig) (client *ssh.Client, err error) {
+	ctx, span := trace.StartSpan(ctx, "VZSSH.Dial")
+	defer func() {
+		span.SetStatus(err)
+		span.End()
+	}()
+
 	d := net.Dialer{
 		Timeout: config.Timeout,
 	}
-	conn, err := d.DialContext(ctx, network, addr)
+	tcpCtx, tcpSpan := trace.StartSpan(ctx, "VZSSH.DialTCP")
+	conn, err := d.DialContext(tcpCtx, network, addr)
+	tcpSpan.SetStatus(err)
+	tcpSpan.End()
 	if err != nil {
 		return nil, err
 	}
@@ -31,6 +42,7 @@ func DialContext(ctx context.Context, network, addr string, config *ssh.ClientCo
 		err    error
 	}
 	ch := make(chan result)
+	_, hsSpan := trace.StartSpan(ctx, "VZSSH.Handshake")
 	go func() {
 		var client *ssh.Client
 		c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
@@ -49,8 +61,13 @@ func DialContext(ctx context.Context, network, addr string, config *ssh.ClientCo
 	}()
 	select {
 	case res := <-ch:
+		hsSpan.SetStatus(res.err)
+		hsSpan.End()
 		return res.client, res.err
 	case <-ctx.Done():
-		return nil, context.Cause(ctx)
+		err = context.Cause(ctx)
+		hsSpan.SetStatus(err)
+		hsSpan.End()
+		return nil, err
 	}
 }

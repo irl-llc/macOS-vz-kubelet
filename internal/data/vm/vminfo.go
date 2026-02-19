@@ -11,4 +11,5 @@ type VirtualMachineInfo struct {
 	Ref                string
 	Resource           resource.MacOSVirtualMachine
 	DownloadCancelFunc context.CancelFunc
+	PermitAcquired     bool
 }

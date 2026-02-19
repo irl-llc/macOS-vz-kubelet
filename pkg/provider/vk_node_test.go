@@ -91,11 +91,12 @@ func TestNodeConfiguration(t *testing.T) {
 		conditions := knode.Status.Conditions
 
 		// Should have all expected k8s conditions as normal: Ready, MemoryPressure, DiskPressure, NetworkUnavailable
-		assert.Len(t, conditions, 4, "node should have 4 default conditions")
+		assert.Len(t, conditions, 5, "node should have 5 default conditions")
 		assert.True(t, containsConditionWithStatus(conditions, corev1.NodeCondition{Type: corev1.NodeReady, Status: corev1.ConditionTrue}), "node should have Ready condition")
 		assert.True(t, containsConditionWithStatus(conditions, corev1.NodeCondition{Type: corev1.NodeMemoryPressure, Status: corev1.ConditionFalse}), "node should have MemoryPressure condition")
 		assert.True(t, containsConditionWithStatus(conditions, corev1.NodeCondition{Type: corev1.NodeDiskPressure, Status: corev1.ConditionFalse}), "node should have DiskPressure condition")
 		assert.True(t, containsConditionWithStatus(conditions, corev1.NodeCondition{Type: corev1.NodeNetworkUnavailable, Status: corev1.ConditionFalse}), "node should have NetworkUnavailable condition")
+		assert.True(t, containsConditionWithStatus(conditions, corev1.NodeCondition{Type: corev1.NodePIDPressure, Status: corev1.ConditionFalse}), "node should have PIDPressure condition")
 	})
 
 	t.Run("Addresses", func(t *testing.T) {

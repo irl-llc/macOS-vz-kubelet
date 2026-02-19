@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/resource"
+	"github.com/virtual-kubelet/virtual-kubelet/log"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -64,6 +65,16 @@ func (p *MacOSVZProvider) resolveImagePullCredentials(ctx context.Context, pod *
 			return resource.RegistryCredentialStore{}, fmt.Errorf("failed to fetch imagePullSecret %q: %w", ref.Name, err)
 		}
 
+		switch secret.Type {
+		case corev1.SecretTypeDockerConfigJson, corev1.SecretTypeDockercfg:
+			// supported types
+		default:
+			warnErr := fmt.Errorf("ignoring imagePullSecret %q: unsupported type %q", ref.Name, secret.Type)
+			log.G(ctx).WithError(warnErr).Warn("Unsupported imagePullSecret type")
+			p.eventRecorder.FailedToResolveImagePullSecrets(ctx, warnErr)
+			continue
+		}
+
 		dockerConfig, err := parseImagePullSecret(secret)
 		if err != nil {
 			return resource.RegistryCredentialStore{}, fmt.Errorf("failed to parse imagePullSecret %q: %w", ref.Name, err)
@@ -90,10 +101,12 @@ func parseImagePullSecret(secret *corev1.Secret) (credentialprovider.DockerConfi
 	switch secret.Type {
 	case corev1.SecretTypeDockerConfigJson:
 		return parseDockerConfigJSON(secret.Data[corev1.DockerConfigJsonKey])
-	default:
-		if data, ok := secret.Data[corev1.DockerConfigJsonKey]; ok {
+	case corev1.SecretTypeDockercfg:
+		if data, ok := secret.Data[corev1.DockerConfigJsonKey]; ok && len(data) > 0 {
 			return parseDockerConfigJSON(data)
 		}
+		return parseDockerConfig(secret.Data[corev1.DockerConfigKey])
+	default:
 		return nil, fmt.Errorf("unsupported secret type %q", secret.Type)
 	}
 }
@@ -113,4 +126,21 @@ func parseDockerConfigJSON(raw []byte) (credentialprovider.DockerConfig, error) 
 	}
 
 	return cfg.Auths, nil
+}
+
+func parseDockerConfig(raw []byte) (credentialprovider.DockerConfig, error) {
+	if len(raw) == 0 {
+		return nil, errEmptyDockerConfig
+	}
+
+	var cfg credentialprovider.DockerConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("invalid dockercfg: %w", err)
+	}
+
+	if len(cfg) == 0 {
+		return nil, errEmptyDockerConfig
+	}
+
+	return cfg, nil
 }

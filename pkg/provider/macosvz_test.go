@@ -236,6 +236,7 @@ func TestCreatePod(t *testing.T) {
 
 func TestCreatePod_ImagePullSecrets(t *testing.T) {
 	authJSON := base64.StdEncoding.EncodeToString([]byte("jsonuser:jsonpass"))
+	authDockercfg := base64.StdEncoding.EncodeToString([]byte("dockuser:dockpass"))
 
 	tests := []struct {
 		name         string
@@ -243,6 +244,7 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 		secretData   map[string][]byte
 		createSecret bool
 		expectErr    bool
+		expectCreds  bool
 		expectedHost string
 		expectedCred resource.RegistryCredentials
 		podImage     string
@@ -252,9 +254,20 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 			secretType:   corev1.SecretTypeDockerConfigJson,
 			secretData:   map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{"https://registry.example.com":{"auth":"` + authJSON + `"}}}`)},
 			createSecret: true,
+			expectCreds:  true,
 			expectedHost: "registry.example.com",
 			expectedCred: resource.RegistryCredentials{Username: "jsonuser", Password: "jsonpass", Server: "registry.example.com"},
 			podImage:     "registry.example.com/app:1",
+		},
+		{
+			name:         "Dockercfg",
+			secretType:   corev1.SecretTypeDockercfg,
+			secretData:   map[string][]byte{corev1.DockerConfigKey: []byte(`{"registry.example.com":{"auth":"` + authDockercfg + `"}}`)},
+			createSecret: true,
+			expectCreds:  true,
+			expectedHost: "registry.example.com",
+			expectedCred: resource.RegistryCredentials{Username: "dockuser", Password: "dockpass", Server: "registry.example.com"},
+			podImage:     "registry.example.com/app:2",
 		},
 		{
 			name:         "InvalidSecretData",
@@ -265,10 +278,18 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 			podImage:     "registry.example.com/app:3",
 		},
 		{
+			name:         "UnsupportedSecretTypeIgnored",
+			secretType:   corev1.SecretTypeOpaque,
+			secretData:   map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{"https://registry.example.com":{"auth":"` + authJSON + `"}}}`)},
+			createSecret: true,
+			expectCreds:  false,
+			podImage:     "registry.example.com/app:4",
+		},
+		{
 			name:         "MissingSecret",
 			createSecret: false,
 			expectErr:    true,
-			podImage:     "registry.example.com/app:4",
+			podImage:     "registry.example.com/app:5",
 		},
 	}
 
@@ -329,10 +350,13 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 			if !tc.expectErr {
 				vzClient.On("CreateVirtualizationGroup", mock.Anything, expectedPod, "", mock.Anything, mock.MatchedBy(func(store resource.RegistryCredentialStore) bool {
 					cred, ok := store.ForImage(tc.podImage)
-					if !ok {
-						return false
+					if tc.expectCreds {
+						if !ok {
+							return false
+						}
+						return cred.Username == tc.expectedCred.Username && cred.Password == tc.expectedCred.Password
 					}
-					return cred.Username == tc.expectedCred.Username && cred.Password == tc.expectedCred.Password
+					return !ok
 				})).Return(nil)
 			}
 

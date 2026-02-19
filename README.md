@@ -138,7 +138,7 @@ We maintain a calculated digest for local image files to guarantee the correctne
 | Feature                                  | Supported | Comments                                                                                                                                                                                                          |
 |------------------------------------------|:---------:|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **Container logs**                       | ⚠️         | Only for docker containers.                                                                                                                                                                                       |
-| **Container exec**                       | ✅        | `VZ_SSH_USER` and `VZ_SSH_PASSWORD` env variables must be set and correspond to macOS VM ssh user and password in order for exec into macOS containers to work. Exec into the regular container works by default. |
+| **Container exec**                       | ✅        | `VZ_SSH_USER` must be set along with either `VZ_SSH_PRIVATE_KEY_BASE64` / `VZ_SSH_PRIVATE_KEY_PATH` or `VZ_SSH_PASSWORD`. These must correspond to the macOS VM SSH credentials. Exec into the regular container works by default. |
 | **Container attach**                     | ⚠️         | Supported, but not tested.                                                                                                                                                                                        |
 | **Container metrics**                    | ❌        |                                                                                                                                                                                                                   |
 | **Resource requests**                    | ⚠️         | MacOS VMs are created with these resource definitions. Docker containers do not support this feature.                                                                                                             |
@@ -167,6 +167,19 @@ By default, Kubernetes adds a projected volume mount with a service account toke
 | **configMap**             | ✅        |                                                                  |
 | **serviceAccountToken**   | ⚠️         | Supported without rotation. Expires in 3607 seconds by default.  |
 | **clusterTrustBundle**    | ❌        |                                                                  |
+
+### Image pull secrets
+
+macOS-vz-kubelet resolves registry credentials from Pod `spec.imagePullSecrets` and from the Pod's ServiceAccount
+`imagePullSecrets` (same namespace).
+
+Supported secret types:
+- `kubernetes.io/dockerconfigjson` (preferred)
+- `kubernetes.io/dockercfg` (legacy)
+
+For `dockerconfigjson`, the secret must include `.dockerconfigjson` data. For `dockercfg`, it must include
+`.dockercfg` data. Secrets of other types are ignored with a warning event/log. Missing or invalid referenced
+secrets fail pod creation.
 
 ## Usage Guide
 
@@ -214,7 +227,11 @@ All flags listed below are optional.
 | `VKUBELET_POD_IP`             |          |                                | The IP address to use for the virtual kubelet pod. Optional settings for debugging purposes.                 |
 | `VZ_BRIDGE_INTERFACE`         |          |                                | The name of the bridge interface to use for the macOS VMs. Requires VMNet and VM Networking capabilities.    |
 | `VZ_SSH_USER`                 | ✓        |                                | The username used when the virtual kubelet attempts to connect to the macOS VM over SSH.                     |
-| `VZ_SSH_PASSWORD`             | ✓        |                                | The password used when the virtual kubelet attempts to connect to the macOS VM over SSH.                     |
+| `VZ_SSH_PRIVATE_KEY_BASE64`   |          |                                | Base64-encoded SSH private key (PEM), optional. Preferred over password auth when set.                        |
+| `VZ_SSH_PRIVATE_KEY_PATH`     |          |                                | Path to an SSH private key file. Used when `VZ_SSH_PRIVATE_KEY_BASE64` is not set.                             |
+| `VZ_SSH_PRIVATE_KEY_PASSPHRASE` |          |                               | Passphrase for `VZ_SSH_PRIVATE_KEY_BASE64` / `VZ_SSH_PRIVATE_KEY_PATH`.                                        |
+| `VZ_SSH_PASSWORD`             |          |                                | The password used when the virtual kubelet attempts to connect to the macOS VM over SSH (fallback).          |
+| `VZ_SSH_KEX_ALGORITHMS`        |          |                                | Optional comma-separated SSH KEX algorithms to override defaults (advanced troubleshooting).                |
 | `DOCKER_HOST`                 |          | `unix:///var/run/docker.sock`  | The address of the Docker daemon to use for regular container support.                                       |
 
 ### Setup Workflow

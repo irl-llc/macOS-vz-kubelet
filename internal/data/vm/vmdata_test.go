@@ -82,22 +82,6 @@ func TestRemoveVirtualMachineInfo(t *testing.T) {
 	assert.False(t, found)
 }
 
-func TestCount(t *testing.T) {
-	d := vm.VirtualMachineData{}
-	assert.Equal(t, int32(0), d.Count())
-
-	_, loaded := d.GetOrCreateVirtualMachineInfo("default", "pod1", vm.VirtualMachineInfo{Ref: "vm1"})
-	assert.False(t, loaded)
-	assert.Equal(t, int32(1), d.Count())
-
-	_, loaded = d.GetOrCreateVirtualMachineInfo("default", "pod2", vm.VirtualMachineInfo{Ref: "vm2"})
-	assert.False(t, loaded)
-	assert.Equal(t, int32(2), d.Count())
-
-	d.RemoveVirtualMachineInfo("default", "pod1")
-	assert.Equal(t, int32(1), d.Count())
-}
-
 func TestListVirtualMachines(t *testing.T) {
 	d := vm.VirtualMachineData{}
 	vm1 := vm.VirtualMachineInfo{Ref: "vm1"}
@@ -133,9 +117,6 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 
 	wg.Wait()
-
-	// Verify the count after concurrent operations
-	assert.Equal(t, int32(numRoutines), d.Count())
 
 	// Verify each virtual machine info was set correctly
 	for i := range numRoutines {

@@ -173,6 +173,14 @@ func getNodeConditions() []corev1.NodeCondition {
 			Reason:             "RouteCreated",
 			Message:            "RouteController created a route",
 		},
+		{
+			Type:               corev1.NodePIDPressure,
+			Status:             corev1.ConditionFalse,
+			LastHeartbeatTime:  metav1.Now(),
+			LastTransitionTime: metav1.Now(),
+			Reason:             "KubeletHasNoPIDPressure",
+			Message:            "kubelet has no PID pressure",
+		},
 	}
 }
 
