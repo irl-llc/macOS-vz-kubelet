@@ -43,7 +43,7 @@ const (
 
 func TestNewMacOSVZProvider_UnsupportedPlatform(t *testing.T) {
 	ctx := context.Background()
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 
 	providerConfig := provider.MacOSVZProviderConfig{
 		Platform: "unsupported",
@@ -185,7 +185,7 @@ func TestCreatePod(t *testing.T) {
 			}
 
 			// Mock Virtualization Client
-			vzClient := clientmocks.NewVzClientInterface(t)
+			vzClient := clientmocks.NewMockVzClientInterface(t)
 
 			// Mock token generation
 			if tc.expectedToken != "" {
@@ -208,7 +208,7 @@ func TestCreatePod(t *testing.T) {
 			expectedPod := tc.pod.DeepCopy()
 
 			// Mock Virtualization Client's CreateVirtualizationGroup method
-			vzClient.On("CreateVirtualizationGroup", mock.Anything, expectedPod, tc.expectedToken, tc.expectedConfigMaps, mock.MatchedBy(func(store resource.RegistryCredentialStore) bool {
+			vzClient.On("CreateVirtualizationGroup", mock.Anything, expectedPod, mock.Anything, mock.MatchedBy(func(store resource.RegistryCredentialStore) bool {
 				_, ok := store.ForImage("nginx:latest")
 				return !ok
 			})).Return(nil)
@@ -314,7 +314,7 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			vzClient := clientmocks.NewVzClientInterface(t)
+			vzClient := clientmocks.NewMockVzClientInterface(t)
 
 			providerConfig := provider.MacOSVZProviderConfig{
 				Platform:      defaultPlatform,
@@ -348,7 +348,7 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 			expectedPod := pod.DeepCopy()
 
 			if !tc.expectErr {
-				vzClient.On("CreateVirtualizationGroup", mock.Anything, expectedPod, "", mock.Anything, mock.MatchedBy(func(store resource.RegistryCredentialStore) bool {
+				vzClient.On("CreateVirtualizationGroup", mock.Anything, expectedPod, mock.Anything, mock.MatchedBy(func(store resource.RegistryCredentialStore) bool {
 					cred, ok := store.ForImage(tc.podImage)
 					if tc.expectCreds {
 						if !ok {
@@ -364,7 +364,7 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 			if tc.expectErr {
 				require.Error(t, err)
 				assert.True(t, errdefs.IsInvalidInput(err))
-				vzClient.AssertNotCalled(t, "CreateVirtualizationGroup", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+				vzClient.AssertNotCalled(t, "CreateVirtualizationGroup", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 				return
 			}
 
@@ -376,7 +376,7 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 
 func TestUpdatePod(t *testing.T) {
 	ctx := context.Background()
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 	providerConfig := provider.MacOSVZProviderConfig{
 		Platform: defaultPlatform,
 	}
@@ -529,7 +529,7 @@ func TestDeletePod(t *testing.T) {
 			ctx := context.Background()
 
 			// Mock the Virtualization client
-			vzClient := clientmocks.NewVzClientInterface(t)
+			vzClient := clientmocks.NewMockVzClientInterface(t)
 
 			// Set up the fake Kubernetes client and pre-create the pod
 			fakeClient := fake.NewSimpleClientset(tc.pod)
@@ -604,7 +604,7 @@ func TestGetPod(t *testing.T) {
 	}
 
 	// Mock the Virtualization client
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 
 	// Test cases
 	t.Run("Basic pod", func(t *testing.T) {
@@ -649,7 +649,7 @@ func TestGetPod(t *testing.T) {
 
 func TestGetPodStatus_GetVirtualizationGroupError(t *testing.T) {
 	ctx := context.Background()
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 	providerConfig := provider.MacOSVZProviderConfig{
 		Platform: defaultPlatform,
 	}
@@ -685,7 +685,7 @@ func TestGetPods(t *testing.T) {
 	}
 
 	// Mock the Virtualization client
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 
 	t.Run("Basic pods", func(t *testing.T) {
 		vg := &client.VirtualizationGroup{
@@ -738,7 +738,7 @@ func TestGetPods(t *testing.T) {
 
 func TestGetContainerLogs(t *testing.T) {
 	ctx := context.Background()
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 	providerConfig := provider.MacOSVZProviderConfig{
 		Platform: defaultPlatform,
 	}
@@ -765,7 +765,7 @@ func TestGetContainerLogs(t *testing.T) {
 
 func TestRunInContainer(t *testing.T) {
 	ctx := context.Background()
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 	providerConfig := provider.MacOSVZProviderConfig{
 		Platform: defaultPlatform,
 	}
@@ -787,7 +787,7 @@ func TestRunInContainer(t *testing.T) {
 
 func TestAttachToContainer(t *testing.T) {
 	ctx := context.Background()
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 	providerConfig := provider.MacOSVZProviderConfig{
 		Platform: defaultPlatform,
 	}
@@ -808,7 +808,7 @@ func TestAttachToContainer(t *testing.T) {
 
 // func TestGetStatsSummary(t *testing.T) {
 // 	ctx := context.Background()
-// 	vzClient := clientmocks.NewVzClientInterface(t)
+// 	vzClient := clientmocks.NewMockVzClientInterface(t)
 // 	providerConfig := provider.MacOSVZProviderConfig{
 // 		Platform: defaultPlatform,
 // 	}
@@ -822,7 +822,7 @@ func TestAttachToContainer(t *testing.T) {
 
 // func TestGetMetricsResource(t *testing.T) {
 // 	ctx := context.Background()
-// 	vzClient := clientmocks.NewVzClientInterface(t)
+// 	vzClient := clientmocks.NewMockVzClientInterface(t)
 // 	providerConfig := provider.MacOSVZProviderConfig{
 // 		Platform: defaultPlatform,
 // 	}
@@ -836,7 +836,7 @@ func TestAttachToContainer(t *testing.T) {
 
 func TestPortForward(t *testing.T) {
 	ctx := context.Background()
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 	providerConfig := provider.MacOSVZProviderConfig{
 		Platform: defaultPlatform,
 	}

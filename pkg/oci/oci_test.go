@@ -28,7 +28,7 @@ var _ oras.ReadOnlyGraphTarget = &oci.Store{}
 func TestNew(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 
 	// Test
 	store, err := oci.New(tempDir, false, mockEventRecorder)
@@ -49,7 +49,7 @@ func handleCloseError(t *testing.T, closer func(context.Context) error) {
 func TestPushAndFetch(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -90,7 +90,7 @@ func TestPushAndFetch(t *testing.T) {
 func TestExists(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -126,7 +126,7 @@ func TestExists(t *testing.T) {
 func TestTag(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -149,7 +149,7 @@ func TestTag(t *testing.T) {
 func TestResolveNotFound(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -162,7 +162,7 @@ func TestResolveNotFound(t *testing.T) {
 func TestAdd(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -186,7 +186,7 @@ func TestAdd(t *testing.T) {
 func TestSetAndGetConfig(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -222,7 +222,7 @@ func TestSetAndGetConfig(t *testing.T) {
 func TestDuplicateName(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -252,7 +252,7 @@ func TestDuplicateName(t *testing.T) {
 func TestEventRecorderIntegration(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 
 	// Setup mock expectations - use mock.Anything for context to avoid context matching issues
 	mockEventRecorder.On("FailedToValidateOCI", mock.Anything, "test-file").Return()
@@ -289,7 +289,7 @@ func TestEventRecorderIntegration(t *testing.T) {
 func TestPredecessors(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -309,7 +309,7 @@ func TestPredecessors(t *testing.T) {
 func TestGetManifestConfigDescriptor(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)
@@ -326,7 +326,7 @@ func TestGetManifestConfigDescriptor(t *testing.T) {
 func TestSet(t *testing.T) {
 	// Setup
 	tempDir := t.TempDir()
-	mockEventRecorder := mocks.NewEventRecorder(t)
+	mockEventRecorder := mocks.NewMockEventRecorder(t)
 	store, err := oci.New(tempDir, false, mockEventRecorder)
 	require.NoError(t, err)
 	defer handleCloseError(t, store.Close)

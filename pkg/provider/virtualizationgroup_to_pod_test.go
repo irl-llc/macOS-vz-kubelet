@@ -237,7 +237,7 @@ func TestGetPodStatus(t *testing.T) {
 			ctx := context.Background()
 
 			// Create virtualization group with VM and containers
-			vm := vmmocks.NewVirtualMachine(t)
+			vm := vmmocks.NewMockVirtualMachine(t)
 			vm.On("State").Return(tc.vmState, nil)
 			vm.On("IPAddress").Return(tc.vmIP, nil)
 			var startedAt, finishedAt *time.Time
@@ -277,7 +277,7 @@ func TestGetPodStatus(t *testing.T) {
 			}
 
 			// Mock the virtualization client
-			vzClient := clientmocks.NewVzClientInterface(t)
+			vzClient := clientmocks.NewMockVzClientInterface(t)
 			vzClient.On("GetVirtualizationGroup", mock.Anything, pod.Namespace, pod.Name).Return(vg, nil).Once()
 			if tc.expectForceDelete {
 				vzClient.On("DeleteVirtualizationGroup", mock.Anything, pod.Namespace, pod.Name, provider.DefaultDeleteVZGroupGracePeriodSeconds).Return(nil).Once()
@@ -301,11 +301,11 @@ func TestGetPodStatus(t *testing.T) {
 func TestGetPodStatus_MissingPod(t *testing.T) {
 	ctx := context.Background()
 	vg := &client.VirtualizationGroup{
-		MacOSVirtualMachine: vmmocks.NewVirtualMachine(t),
+		MacOSVirtualMachine: vmmocks.NewMockVirtualMachine(t),
 	}
 
 	// Mock the virtualization client
-	vzClient := clientmocks.NewVzClientInterface(t)
+	vzClient := clientmocks.NewMockVzClientInterface(t)
 	vzClient.On("GetVirtualizationGroup", mock.Anything, "test", "test").Return(vg, nil).Once()
 
 	// Setup provider
