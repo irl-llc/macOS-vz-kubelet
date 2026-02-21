@@ -25,6 +25,8 @@ import (
 	"github.com/virtual-kubelet/virtual-kubelet/node/api"
 	"github.com/virtual-kubelet/virtual-kubelet/node/nodeutil"
 
+	rm "github.com/agoda-com/macOS-vz-kubelet/pkg/resourcemanager"
+
 	docker "github.com/moby/moby/client"
 
 	"github.com/mitchellh/go-homedir"
@@ -302,21 +304,19 @@ func run(ctx context.Context, c kubernetes.Interface) error {
 				),
 			)
 
-			// Create a containerd client to manage non-macOS containers
-			// If unavailable - ignore, but warn the user that some features will be unavailable
-			dockerCl, err := createDockerClient(ctx)
-			if err != nil {
-				log.G(ctx).Warnf("failed to create docker client: %v; some features (like non-macOS containers) will be unavailable", err)
-			}
-
 			cachePath, err := os.UserCacheDir()
 			if err != nil {
 				return nil, nil, err
 			}
 			cachePath = filepath.Join(cachePath, appIdentifier)
 
+			containerClient, err := createContainerClient(ctx, eventRecorder)
+			if err != nil {
+				log.G(ctx).Warnf("failed to create container client: %v; non-macOS containers will be unavailable", err)
+			}
+
 			networkInterfaceIdentifier := os.Getenv("VZ_BRIDGE_INTERFACE")
-			vzClient := client.NewVzClientAPIs(ctx, eventRecorder, networkInterfaceIdentifier, cachePath, dockerCl)
+			vzClient := client.NewVzClientAPIs(ctx, eventRecorder, networkInterfaceIdentifier, cachePath, containerClient)
 
 			providerConfig := provider.MacOSVZProviderConfig{
 				NodeName:           nodeName,
@@ -382,24 +382,45 @@ func run(ctx context.Context, c kubernetes.Interface) error {
 	return node.Err()
 }
 
-func createDockerClient(ctx context.Context) (dockerCl *docker.Client, err error) {
-	// Check if DOCKER_HOST environment variable is set
+func createContainerClient(ctx context.Context, eventRecorder event.EventRecorder) (rm.ContainersClient, error) {
+	if cli := appleContainerCLI(); cli != nil {
+		return rm.NewAppleContainerClient(ctx, cli, eventRecorder)
+	}
+	return createDockerFallback(ctx, eventRecorder)
+}
+
+func appleContainerCLI() *rm.AppleContainerCLI {
+	cli, err := rm.NewAppleContainerCLI("container")
+	if err != nil {
+		return nil
+	}
+	return cli
+}
+
+func createDockerFallback(ctx context.Context, eventRecorder event.EventRecorder) (rm.ContainersClient, error) {
+	dockerCl, err := newDockerClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rm.NewDockerClient(ctx, dockerCl, eventRecorder)
+}
+
+func newDockerClient(ctx context.Context) (*docker.Client, error) {
+	var (
+		dockerCl *docker.Client
+		err      error
+	)
 	if host := os.Getenv("DOCKER_HOST"); host != "" {
 		dockerCl, err = docker.NewClientWithOpts(docker.WithHost(host))
 	} else {
-		// Probe for the existing docker client
 		dockerCl, err = docker.NewClientWithOpts()
 	}
-
 	if err != nil {
-		return nil, fmt.Errorf("failed to create docker client: %w", err)
+		return nil, fmt.Errorf("create docker client: %w", err)
 	}
-
-	// Validate that client can connect to the socket
 	if _, err := dockerCl.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("failed to ping docker client: %w", err)
+		return nil, fmt.Errorf("ping docker: %w", err)
 	}
-
 	return dockerCl, nil
 }
 
