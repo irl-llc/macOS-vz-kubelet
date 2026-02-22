@@ -415,9 +415,9 @@ func (_c *MockVzClientInterface_GetVirtualizationGroupListResult_Call) RunAndRet
 	return _c
 }
 
-// GetVirtualizationGroupStats provides a mock function with given fields: ctx, namespace, name, containers
-func (_m *MockVzClientInterface) GetVirtualizationGroupStats(ctx context.Context, namespace string, name string, containers []v1.Container) ([]v1alpha1.ContainerStats, error) {
-	ret := _m.Called(ctx, namespace, name, containers)
+// GetVirtualizationGroupStats provides a mock function with given fields: ctx, pod
+func (_m *MockVzClientInterface) GetVirtualizationGroupStats(ctx context.Context, pod *v1.Pod) ([]v1alpha1.ContainerStats, error) {
+	ret := _m.Called(ctx, pod)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetVirtualizationGroupStats")
@@ -425,19 +425,19 @@ func (_m *MockVzClientInterface) GetVirtualizationGroupStats(ctx context.Context
 
 	var r0 []v1alpha1.ContainerStats
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, string, string, []v1.Container) ([]v1alpha1.ContainerStats, error)); ok {
-		return rf(ctx, namespace, name, containers)
+	if rf, ok := ret.Get(0).(func(context.Context, *v1.Pod) ([]v1alpha1.ContainerStats, error)); ok {
+		return rf(ctx, pod)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, string, string, []v1.Container) []v1alpha1.ContainerStats); ok {
-		r0 = rf(ctx, namespace, name, containers)
+	if rf, ok := ret.Get(0).(func(context.Context, *v1.Pod) []v1alpha1.ContainerStats); ok {
+		r0 = rf(ctx, pod)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).([]v1alpha1.ContainerStats)
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context, string, string, []v1.Container) error); ok {
-		r1 = rf(ctx, namespace, name, containers)
+	if rf, ok := ret.Get(1).(func(context.Context, *v1.Pod) error); ok {
+		r1 = rf(ctx, pod)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -452,16 +452,14 @@ type MockVzClientInterface_GetVirtualizationGroupStats_Call struct {
 
 // GetVirtualizationGroupStats is a helper method to define mock.On call
 //   - ctx context.Context
-//   - namespace string
-//   - name string
-//   - containers []v1.Container
-func (_e *MockVzClientInterface_Expecter) GetVirtualizationGroupStats(ctx interface{}, namespace interface{}, name interface{}, containers interface{}) *MockVzClientInterface_GetVirtualizationGroupStats_Call {
-	return &MockVzClientInterface_GetVirtualizationGroupStats_Call{Call: _e.mock.On("GetVirtualizationGroupStats", ctx, namespace, name, containers)}
+//   - pod *v1.Pod
+func (_e *MockVzClientInterface_Expecter) GetVirtualizationGroupStats(ctx interface{}, pod interface{}) *MockVzClientInterface_GetVirtualizationGroupStats_Call {
+	return &MockVzClientInterface_GetVirtualizationGroupStats_Call{Call: _e.mock.On("GetVirtualizationGroupStats", ctx, pod)}
 }
 
-func (_c *MockVzClientInterface_GetVirtualizationGroupStats_Call) Run(run func(ctx context.Context, namespace string, name string, containers []v1.Container)) *MockVzClientInterface_GetVirtualizationGroupStats_Call {
+func (_c *MockVzClientInterface_GetVirtualizationGroupStats_Call) Run(run func(ctx context.Context, pod *v1.Pod)) *MockVzClientInterface_GetVirtualizationGroupStats_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].([]v1.Container))
+		run(args[0].(context.Context), args[1].(*v1.Pod))
 	})
 	return _c
 }
@@ -471,7 +469,7 @@ func (_c *MockVzClientInterface_GetVirtualizationGroupStats_Call) Return(_a0 []v
 	return _c
 }
 
-func (_c *MockVzClientInterface_GetVirtualizationGroupStats_Call) RunAndReturn(run func(context.Context, string, string, []v1.Container) ([]v1alpha1.ContainerStats, error)) *MockVzClientInterface_GetVirtualizationGroupStats_Call {
+func (_c *MockVzClientInterface_GetVirtualizationGroupStats_Call) RunAndReturn(run func(context.Context, *v1.Pod) ([]v1alpha1.ContainerStats, error)) *MockVzClientInterface_GetVirtualizationGroupStats_Call {
 	_c.Call.Return(run)
 	return _c
 }

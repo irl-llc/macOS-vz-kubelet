@@ -29,97 +29,128 @@ func (p *MacOSVZProvider) virtualizationGroupToPod(ctx context.Context, vg *clie
 
 // buildPodStatus constructs the pod's status from the provided virtualization group.
 func (p *MacOSVZProvider) buildPodStatus(_ context.Context, vg *client.VirtualizationGroup, pod *corev1.Pod) *corev1.PodStatus {
-	var firstContainerStartTime, lastUpdateTime time.Time
+	var times statusTimes
+	vmNames := client.VMContainerNames(pod)
+	containerStatuses := buildContainerStatuses(vg, pod, vmNames, &times)
 
-	macOSVM := vg.MacOSVirtualMachine
-	groupContainers := vg.Containers
-
-	podIp := macOSVM.IPAddress()
-	containerStatuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.Containers))
-
-	for i, c := range pod.Spec.Containers {
-		// vz: always assume that first container is macOS container
-		if i == 0 {
-			state := macOSVM.State()
-			started := podIp != "" // TODO: this needs to indicate whether postStart hook has finished
-			ready := state == resource.VirtualMachineStateRunning
-
-			if startedAt := macOSVM.StartedAt(); startedAt != nil {
-				firstContainerStartTime = *startedAt
-				lastUpdateTime = firstContainerStartTime
-			}
-			if finishedAt := macOSVM.FinishedAt(); finishedAt != nil {
-				lastUpdateTime = *finishedAt
-			}
-
-			containerStatus := corev1.ContainerStatus{
-				Name:         c.Name,
-				State:        vmToContainerState(macOSVM, pod.CreationTimestamp.Time),
-				Ready:        ready,
-				Started:      &started,
-				RestartCount: 0,
-				Image:        c.Image,
-				ImageID:      "",
-				ContainerID:  utils.GetContainerID(resource.MacOSRuntime, c.Name),
-			}
-
-			// Add the container status to the list.
-			containerStatuses = append(containerStatuses, containerStatus)
-			continue
-		}
-
-		container, err := getContainerWithName(c.Name, groupContainers)
-		if err != nil {
-			continue
-		}
-
-		state := container.State.Status
-		started := state == resource.ContainerStatusRunning
-		ready := state == resource.ContainerStatusRunning
-
-		containerStatus := corev1.ContainerStatus{
-			Name:         c.Name,
-			State:        containerToContainerState(container, pod.CreationTimestamp.Time),
-			Ready:        ready,
-			Started:      &started,
-			RestartCount: 0,
-			Image:        c.Image,
-			ImageID:      "",
-			ContainerID:  utils.GetContainerID(resource.ContainerRuntime, c.Name),
-		}
-
-		startedAt := container.State.StartedAt
-		finishedAt := container.State.FinishedAt
-		if !startedAt.IsZero() &&
-			(startedAt.Before(firstContainerStartTime) || firstContainerStartTime.IsZero()) {
-			firstContainerStartTime = startedAt
-		}
-		if startedAt.After(lastUpdateTime) {
-			lastUpdateTime = startedAt
-		}
-		if !finishedAt.IsZero() &&
-			(finishedAt.After(lastUpdateTime) || lastUpdateTime.IsZero()) {
-			lastUpdateTime = finishedAt
-		}
-
-		// Add the container status to the list.
-		containerStatuses = append(containerStatuses, containerStatus)
-	}
-
-	var startTime *metav1.Time
-	if !firstContainerStartTime.IsZero() {
-		startTime = &metav1.Time{Time: firstContainerStartTime}
-	}
 	return &corev1.PodStatus{
 		Phase:             getPodPhaseFromVirtualizationGroup(vg),
-		Conditions:        getPodConditionsFromVirtualizationGroup(vg, pod.CreationTimestamp.Time, firstContainerStartTime, lastUpdateTime),
-		Message:           "",
-		Reason:            "",
+		Conditions:        getPodConditionsFromVirtualizationGroup(vg, pod.CreationTimestamp.Time, times.firstStart, times.lastUpdate),
 		HostIP:            p.nodeIPAddress,
-		PodIP:             podIp,
-		StartTime:         startTime,
+		PodIP:             podIPAddress(vg),
+		StartTime:         times.startTime(),
 		ContainerStatuses: containerStatuses,
 	}
+}
+
+type statusTimes struct {
+	firstStart time.Time
+	lastUpdate time.Time
+}
+
+func (t *statusTimes) startTime() *metav1.Time {
+	if t.firstStart.IsZero() {
+		return nil
+	}
+	return &metav1.Time{Time: t.firstStart}
+}
+
+func (t *statusTimes) trackVM(vm resource.VirtualMachine) {
+	if startedAt := vm.StartedAt(); startedAt != nil {
+		t.trackStart(*startedAt)
+	}
+	if finishedAt := vm.FinishedAt(); finishedAt != nil {
+		t.trackFinish(*finishedAt)
+	}
+}
+
+func (t *statusTimes) trackContainer(ctr resource.Container) {
+	if !ctr.State.StartedAt.IsZero() {
+		t.trackStart(ctr.State.StartedAt)
+	}
+	if !ctr.State.FinishedAt.IsZero() {
+		t.trackFinish(ctr.State.FinishedAt)
+	}
+}
+
+func (t *statusTimes) trackStart(ts time.Time) {
+	if t.firstStart.IsZero() || ts.Before(t.firstStart) {
+		t.firstStart = ts
+	}
+	if ts.After(t.lastUpdate) {
+		t.lastUpdate = ts
+	}
+}
+
+func (t *statusTimes) trackFinish(ts time.Time) {
+	if ts.After(t.lastUpdate) {
+		t.lastUpdate = ts
+	}
+}
+
+func buildContainerStatuses(vg *client.VirtualizationGroup, pod *corev1.Pod, vmNames map[string]bool, times *statusTimes) []corev1.ContainerStatus {
+	statuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.Containers))
+	for _, c := range pod.Spec.Containers {
+		if s, ok := containerStatusFor(vg, c, vmNames, pod.CreationTimestamp.Time, times); ok {
+			statuses = append(statuses, s)
+		}
+	}
+	return statuses
+}
+
+func containerStatusFor(
+	vg *client.VirtualizationGroup, spec corev1.Container,
+	vmNames map[string]bool, createdAt time.Time, times *statusTimes,
+) (corev1.ContainerStatus, bool) {
+	if vmNames[spec.Name] {
+		if !vg.HasVM() {
+			return corev1.ContainerStatus{}, false
+		}
+		return buildVMStatus(vg.MacOSVirtualMachine, spec, createdAt, times), true
+	}
+	ctr, err := getContainerWithName(spec.Name, vg.Containers)
+	if err != nil {
+		return corev1.ContainerStatus{}, false
+	}
+	return buildContainerStatus(ctr, spec, createdAt, times), true
+}
+
+func buildVMStatus(vm resource.VirtualMachine, spec corev1.Container, createdAt time.Time, times *statusTimes) corev1.ContainerStatus {
+	times.trackVM(vm)
+	vmState := vm.State()
+	podIP := vm.IPAddress()
+	started := podIP != ""
+	ready := vmState == resource.VirtualMachineStateRunning
+	return corev1.ContainerStatus{
+		Name:        spec.Name,
+		State:       vmToContainerState(vm, createdAt),
+		Ready:       ready,
+		Started:     &started,
+		Image:       spec.Image,
+		ContainerID: utils.GetContainerID(resource.MacOSRuntime, spec.Name),
+	}
+}
+
+func buildContainerStatus(ctr resource.Container, spec corev1.Container, createdAt time.Time, times *statusTimes) corev1.ContainerStatus {
+	times.trackContainer(ctr)
+	s := ctr.State.Status
+	started := s == resource.ContainerStatusRunning
+	return corev1.ContainerStatus{
+		Name:        spec.Name,
+		State:       containerToContainerState(ctr, createdAt),
+		Ready:       s == resource.ContainerStatusRunning,
+		Started:     &started,
+		Image:       spec.Image,
+		ContainerID: utils.GetContainerID(resource.ContainerRuntime, spec.Name),
+	}
+}
+
+// podIPAddress returns the pod's IP from the VM, or empty if no VM exists.
+func podIPAddress(vg *client.VirtualizationGroup) string {
+	if !vg.HasVM() {
+		return ""
+	}
+	return vg.MacOSVirtualMachine.IPAddress()
 }
 
 // vmToContainerState converts the macOS VM state to a Kubernetes container state.
@@ -280,130 +311,142 @@ func getContainerWithName(name string, list []resource.Container) (resource.Cont
 
 // getPodPhaseFromVirtualizationGroup determines the pod phase based on the state of the virtualization group.
 func getPodPhaseFromVirtualizationGroup(vg *client.VirtualizationGroup) corev1.PodPhase {
-	// Get the macOS VM and group containers
-	macOSVM := vg.MacOSVirtualMachine
-	groupContainers := vg.Containers
-	hasIP := macOSVM.IPAddress() != ""
+	if vg.HasVM() {
+		return podPhaseWithVM(vg)
+	}
+	return podPhaseContainersOnly(vg.Containers)
+}
 
-	// Determine the pod phase based on the macOS VM state
-	switch macOSVM.State() {
+func podPhaseWithVM(vg *client.VirtualizationGroup) corev1.PodPhase {
+	switch vg.MacOSVirtualMachine.State() {
 	case resource.VirtualMachineStatePreparing, resource.VirtualMachineStateStarting:
 		return corev1.PodPending
 	case resource.VirtualMachineStateTerminated:
 		return corev1.PodSucceeded
 	case resource.VirtualMachineStateFailed:
 		return corev1.PodFailed
-	case resource.VirtualMachineStateTerminating, resource.VirtualMachineStateRunning:
-		// If there are no group containers, consider VM as a single source of truth
-		if len(groupContainers) == 0 {
-			if !hasIP {
-				return corev1.PodPending
-			}
-			return corev1.PodRunning
-		}
 	}
 
-	// Determine the pod phase based on the container statuses
-	allContainersRunning := true
-	for _, container := range groupContainers {
-		switch container.State.Status {
+	// VM is running/terminating — also check containers
+	if len(vg.Containers) == 0 {
+		if vg.MacOSVirtualMachine.IPAddress() == "" {
+			return corev1.PodPending
+		}
+		return corev1.PodRunning
+	}
+	return containerPhase(vg.Containers, vg.MacOSVirtualMachine.IPAddress() != "")
+}
+
+func podPhaseContainersOnly(containers []resource.Container) corev1.PodPhase {
+	return containerPhase(containers, true)
+}
+
+func containerPhase(containers []resource.Container, networkReady bool) corev1.PodPhase {
+	allRunning := true
+	for _, ctr := range containers {
+		switch ctr.State.Status {
 		case resource.ContainerStatusWaiting, resource.ContainerStatusCreated:
 			return corev1.PodPending
 		case resource.ContainerStatusRunning:
-			// Continue checking other containers
+			continue
 		case resource.ContainerStatusOOMKilled, resource.ContainerStatusUnknown:
 			return corev1.PodFailed
 		default:
-			allContainersRunning = false
+			allRunning = false
 		}
 	}
-
-	if !hasIP {
+	if !networkReady {
 		return corev1.PodPending
 	}
-
-	if allContainersRunning {
+	if allRunning {
 		return corev1.PodRunning
 	}
-
 	return corev1.PodUnknown
 }
 
 // getPodConditionsFromVirtualizationGroup determines the pod conditions based on the state of the virtualization group.
-func getPodConditionsFromVirtualizationGroup(vg *client.VirtualizationGroup, podCreationTime, firstContainerStartTime, lastUpdateTime time.Time) []corev1.PodCondition {
-	// Get the macOS VM and group containers
-	macOSVM := vg.MacOSVirtualMachine
-	groupContainers := vg.Containers
+func getPodConditionsFromVirtualizationGroup(vg *client.VirtualizationGroup, podCreationTime, firstStart, lastUpdate time.Time) []corev1.PodCondition {
+	initialized, ready := evaluateConditions(vg)
 
-	// Initialize pod conditions
-	conditions := []corev1.PodCondition{}
-
-	// Determine PodScheduled condition
-	podScheduledCondition := corev1.PodCondition{
-		Type:               corev1.PodScheduled,
-		Status:             corev1.ConditionTrue,
-		LastTransitionTime: metav1.Time{Time: podCreationTime},
+	return []corev1.PodCondition{
+		{
+			Type:               corev1.PodScheduled,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.Time{Time: podCreationTime},
+		},
+		{
+			Type:               corev1.PodInitialized,
+			Status:             initialized,
+			LastTransitionTime: metav1.Time{Time: firstStart},
+		},
+		{
+			Type:               corev1.PodReady,
+			Status:             ready,
+			LastTransitionTime: metav1.Time{Time: lastUpdate},
+		},
 	}
-	conditions = append(conditions, podScheduledCondition)
+}
 
-	// Determine Initialized condition
-	initializedCondition := corev1.PodCondition{
-		Type:               corev1.PodInitialized,
-		Status:             corev1.ConditionFalse,
-		LastTransitionTime: metav1.Time{Time: firstContainerStartTime},
+func evaluateConditions(vg *client.VirtualizationGroup) (corev1.ConditionStatus, corev1.ConditionStatus) {
+	if !vg.HasVM() {
+		return containerConditions(vg.Containers)
 	}
+	return vmConditions(vg)
+}
 
-	// Determine Ready condition
-	readyCondition := corev1.PodCondition{
-		Type:               corev1.PodReady,
-		Status:             corev1.ConditionFalse,
-		LastTransitionTime: metav1.Time{Time: lastUpdateTime},
-	}
-
-	// Check macOS VM state
-	switch macOSVM.State() {
+func vmConditions(vg *client.VirtualizationGroup) (corev1.ConditionStatus, corev1.ConditionStatus) {
+	switch vg.MacOSVirtualMachine.State() {
 	case resource.VirtualMachineStatePreparing, resource.VirtualMachineStateStarting:
-		// Pod is not yet initialized or ready
-		initializedCondition.Status = corev1.ConditionFalse
-		readyCondition.Status = corev1.ConditionFalse
+		return corev1.ConditionFalse, corev1.ConditionFalse
+	case resource.VirtualMachineStateRunning, resource.VirtualMachineStateTerminating:
+		return vmRunningConditions(vg.Containers)
 	case resource.VirtualMachineStateTerminated:
-		// Pod is initialized but not ready
-		initializedCondition.Status = corev1.ConditionTrue
-		readyCondition.Status = corev1.ConditionFalse
+		return corev1.ConditionTrue, corev1.ConditionFalse
 	case resource.VirtualMachineStateFailed:
-		// Pod is not initialized and not ready
-		initializedCondition.Status = corev1.ConditionFalse
-		readyCondition.Status = corev1.ConditionFalse
-	case resource.VirtualMachineStateTerminating, resource.VirtualMachineStateRunning:
-		// Check container states
-		allContainersRunning := true
-		for _, container := range groupContainers {
-			switch container.State.Status {
-			case resource.ContainerStatusWaiting, resource.ContainerStatusCreated:
-				// Pod is not yet initialized or ready
-				initializedCondition.Status = corev1.ConditionFalse
-				readyCondition.Status = corev1.ConditionFalse
-			case resource.ContainerStatusRunning:
-				// Continue checking other containers
-			case resource.ContainerStatusOOMKilled, resource.ContainerStatusUnknown:
-				// Pod is not initialized and not ready
-				initializedCondition.Status = corev1.ConditionFalse
-				readyCondition.Status = corev1.ConditionFalse
-				allContainersRunning = false
-			default:
-				allContainersRunning = false
-			}
-		}
+		return corev1.ConditionFalse, corev1.ConditionFalse
+	default:
+		return corev1.ConditionFalse, corev1.ConditionFalse
+	}
+}
 
-		if allContainersRunning {
-			// Pod is initialized and ready
-			initializedCondition.Status = corev1.ConditionTrue
-			readyCondition.Status = corev1.ConditionTrue
+// vmRunningConditions evaluates conditions when the VM is running/terminating.
+// Containers still starting (waiting/created) are tolerated; fatal states fail immediately.
+func vmRunningConditions(containers []resource.Container) (corev1.ConditionStatus, corev1.ConditionStatus) {
+	allRunning := true
+	for _, ctr := range containers {
+		switch ctr.State.Status {
+		case resource.ContainerStatusRunning:
+			continue
+		case resource.ContainerStatusOOMKilled, resource.ContainerStatusUnknown:
+			return corev1.ConditionFalse, corev1.ConditionFalse
+		case resource.ContainerStatusWaiting, resource.ContainerStatusCreated:
+			// Container still starting — pod is initialized but not ready
+			allRunning = false
+		default:
+			allRunning = false
 		}
 	}
+	if allRunning {
+		return corev1.ConditionTrue, corev1.ConditionTrue
+	}
+	return corev1.ConditionTrue, corev1.ConditionFalse
+}
 
-	// Append conditions to the list
-	conditions = append(conditions, initializedCondition, readyCondition)
+func containerConditions(containers []resource.Container) (corev1.ConditionStatus, corev1.ConditionStatus) {
+	if !allContainersHealthy(containers) {
+		return corev1.ConditionFalse, corev1.ConditionFalse
+	}
+	return corev1.ConditionTrue, corev1.ConditionTrue
+}
 
-	return conditions
+func allContainersHealthy(containers []resource.Container) bool {
+	for _, ctr := range containers {
+		switch ctr.State.Status {
+		case resource.ContainerStatusRunning:
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }

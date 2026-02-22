@@ -90,7 +90,7 @@ func (p *MacOSVZPodMetricsProvider) GetStatsSummary(ctx context.Context) (summar
 			}
 
 			// Get the virtualization group for the pod
-			cs, err := p.vzClient.GetVirtualizationGroupStats(ctx, pod.Namespace, pod.Name, pod.Spec.Containers)
+			cs, err := p.vzClient.GetVirtualizationGroupStats(ctx, pod)
 			if err != nil {
 				return fmt.Errorf("failed to get virtualization group stats for pod %s/%s: %w", pod.Namespace, pod.Name, err)
 			}
