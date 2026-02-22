@@ -12,6 +12,7 @@ import (
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/client"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/event"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/metrics"
+	"github.com/agoda-com/macOS-vz-kubelet/pkg/probes"
 
 	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
 	"github.com/virtual-kubelet/virtual-kubelet/log"
@@ -20,6 +21,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 )
@@ -48,6 +50,7 @@ type MacOSVZProvider struct {
 	podLister corev1listers.PodLister
 
 	eventRecorder event.EventRecorder
+	probeRunner   *probes.Runner
 
 	nodeName           string
 	nodeIPAddress      string
@@ -76,6 +79,7 @@ func NewMacOSVZProvider(ctx context.Context, vzClient client.VzClientInterface, 
 	p.daemonEndpointPort = config.DaemonEndpointPort
 
 	p.eventRecorder = config.EventRecorder
+	p.probeRunner = probes.NewRunner(p.execProbe, p.resolveContainerIP)
 
 	p.MacOSVZPodMetricsProvider = metrics.NewMacOSVZPodMetricsProvider(p.nodeName, p.podLister, p.vzClient)
 	return p, nil
@@ -110,7 +114,11 @@ func (p *MacOSVZProvider) CreatePod(ctx context.Context, pod *corev1.Pod) (err e
 		return errdefs.AsInvalidInput(err)
 	}
 
-	return p.vzClient.CreateVirtualizationGroup(ctx, pod, volData, registryCreds)
+	if err := p.vzClient.CreateVirtualizationGroup(ctx, pod, volData, registryCreds); err != nil {
+		return err
+	}
+	p.probeRunner.StartForPod(pod)
+	return nil
 }
 
 // UpdatePod takes a Kubernetes Pod and updates it within the provider.
@@ -142,6 +150,9 @@ func (p *MacOSVZProvider) DeletePod(ctx context.Context, pod *corev1.Pod) (err e
 }
 
 func (p *MacOSVZProvider) handleDeletePod(ctx context.Context, pod *corev1.Pod) {
+	podKey := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
+	p.probeRunner.StopForPod(podKey)
+
 	var err error
 	ctx, span := trace.StartSpan(ctx, "MacOSVZProvider.handleDeletePod")
 	defer func() {
