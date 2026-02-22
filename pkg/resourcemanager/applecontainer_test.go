@@ -380,6 +380,101 @@ func TestRemoveContainers_Success(t *testing.T) {
 	cli.AssertCalled(t, "RemoveContainer", mock.Anything, "id-rm", true)
 }
 
+// --- WaitForContainer tests ---
+
+func TestWaitForContainer_NotTracked(t *testing.T) {
+	client, _, _ := newTestClient(t)
+	_, err := client.WaitForContainer(context.Background(), "ns", "pod", "ctr")
+	assert.Error(t, err)
+}
+
+func TestWaitForContainer_ExitZero(t *testing.T) {
+	client, cli, rec := newTestClient(t)
+	ctx := context.Background()
+
+	cli.On("CreateAndStartContainer", mock.Anything, mock.AnythingOfType("resourcemanager.ContainerCreateArgs")).
+		Return("init-id", nil)
+	rec.On("CreatedContainer", mock.Anything, mock.Anything).Return()
+	rec.On("StartedContainer", mock.Anything, mock.Anything).Return()
+
+	// First inspect returns running, second returns dead with exit 0
+	cli.On("InspectContainer", mock.Anything, "init-id").
+		Return(resource.ContainerState{Status: resource.ContainerStatusRunning}, nil).Once()
+	cli.On("InspectContainer", mock.Anything, "init-id").
+		Return(resource.ContainerState{Status: resource.ContainerStatusDead, ExitCode: 0}, nil).Once()
+
+	require.NoError(t, client.CreateContainer(ctx, rm.ContainerParams{
+		PodNamespace:    "ns",
+		PodName:         "pod",
+		Name:            "init",
+		Image:           "busybox",
+		ImagePullPolicy: corev1.PullNever,
+	}))
+	awaitCall(t, &cli.Mock, "CreateAndStartContainer")
+
+	exitCode, err := client.WaitForContainer(ctx, "ns", "pod", "init")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exitCode)
+}
+
+func TestWaitForContainer_ExitNonZero(t *testing.T) {
+	client, cli, rec := newTestClient(t)
+	ctx := context.Background()
+
+	cli.On("CreateAndStartContainer", mock.Anything, mock.AnythingOfType("resourcemanager.ContainerCreateArgs")).
+		Return("fail-id", nil)
+	rec.On("CreatedContainer", mock.Anything, mock.Anything).Return()
+	rec.On("StartedContainer", mock.Anything, mock.Anything).Return()
+
+	cli.On("InspectContainer", mock.Anything, "fail-id").
+		Return(resource.ContainerState{Status: resource.ContainerStatusDead, ExitCode: 1}, nil)
+
+	require.NoError(t, client.CreateContainer(ctx, rm.ContainerParams{
+		PodNamespace:    "ns",
+		PodName:         "pod",
+		Name:            "fail-init",
+		Image:           "busybox",
+		ImagePullPolicy: corev1.PullNever,
+	}))
+	awaitCall(t, &cli.Mock, "CreateAndStartContainer")
+
+	exitCode, err := client.WaitForContainer(ctx, "ns", "pod", "fail-init")
+	require.NoError(t, err)
+	assert.Equal(t, 1, exitCode)
+}
+
+// --- RemoveContainer (singular) tests ---
+
+func TestRemoveContainer_NotTracked(t *testing.T) {
+	client, _, _ := newTestClient(t)
+	err := client.RemoveContainer(context.Background(), "ns", "pod", "nope")
+	assert.Error(t, err)
+}
+
+func TestRemoveContainer_Success(t *testing.T) {
+	client, cli, rec := newTestClient(t)
+	ctx := context.Background()
+
+	cli.On("CreateAndStartContainer", mock.Anything, mock.AnythingOfType("resourcemanager.ContainerCreateArgs")).
+		Return("rm-id", nil)
+	cli.On("RemoveContainer", mock.Anything, "rm-id", true).Return(nil)
+	rec.On("CreatedContainer", mock.Anything, mock.Anything).Return()
+	rec.On("StartedContainer", mock.Anything, mock.Anything).Return()
+
+	require.NoError(t, client.CreateContainer(ctx, rm.ContainerParams{
+		PodNamespace:    "ns",
+		PodName:         "pod",
+		Name:            "rm-single",
+		Image:           "busybox",
+		ImagePullPolicy: corev1.PullNever,
+	}))
+	awaitCall(t, &cli.Mock, "CreateAndStartContainer")
+
+	err := client.RemoveContainer(ctx, "ns", "pod", "rm-single")
+	require.NoError(t, err)
+	cli.AssertCalled(t, "RemoveContainer", mock.Anything, "rm-id", true)
+}
+
 // --- GetContainersListResult ---
 
 func TestGetContainersListResult_Empty(t *testing.T) {

@@ -178,6 +178,56 @@ func (c *AppleContainerClient) execPostStart(ctx context.Context, params Contain
 	return c.ExecInContainer(timeout, params.PodNamespace, params.PodName, params.Name, params.PostStartAction.Command, node.DiscardingExecIO())
 }
 
+// WaitForContainer polls until a container reaches a terminal state and returns the exit code.
+func (c *AppleContainerClient) WaitForContainer(ctx context.Context, podNs, podName, containerName string) (int, error) {
+	info, ok := c.data.GetContainerInfo(podNs, podName, containerName)
+	if !ok {
+		return -1, errdefs.NotFound("container not found")
+	}
+	if info.Error != nil {
+		return -1, info.Error
+	}
+	return c.pollUntilDone(ctx, info.ID)
+}
+
+func (c *AppleContainerClient) pollUntilDone(ctx context.Context, id string) (int, error) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			state, err := c.cli.InspectContainer(ctx, id)
+			if err != nil {
+				return -1, err
+			}
+			if state.Status.IsTerminal() {
+				return state.ExitCode, nil
+			}
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		}
+	}
+}
+
+// RemoveContainer removes a single container for a pod.
+func (c *AppleContainerClient) RemoveContainer(ctx context.Context, podNs, podName, containerName string) (err error) {
+	ctx, span := trace.StartSpan(ctx, "AppleContainerClient.RemoveContainer")
+	defer func() {
+		span.SetStatus(err)
+		span.End()
+	}()
+
+	info, ok := c.data.RemoveContainerInfo(podNs, podName, containerName)
+	if !ok {
+		return errdefs.NotFound("container not found")
+	}
+	if info.ID == "" {
+		return nil
+	}
+	return c.cli.RemoveContainer(ctx, info.ID, true)
+}
+
 // RemoveContainers removes all containers for a pod.
 func (c *AppleContainerClient) RemoveContainers(ctx context.Context, podNs, podName string, gracePeriod int64) (err error) {
 	ctx, span := trace.StartSpan(ctx, "AppleContainerClient.RemoveContainers")

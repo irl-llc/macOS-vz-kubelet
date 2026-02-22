@@ -34,12 +34,13 @@ func (p *MacOSVZProvider) buildPodStatus(_ context.Context, vg *client.Virtualiz
 	containerStatuses := buildContainerStatuses(vg, pod, vmNames, &times)
 
 	return &corev1.PodStatus{
-		Phase:             getPodPhaseFromVirtualizationGroup(vg),
-		Conditions:        getPodConditionsFromVirtualizationGroup(vg, pod.CreationTimestamp.Time, times.firstStart, times.lastUpdate),
-		HostIP:            p.nodeIPAddress,
-		PodIP:             podIPAddress(vg),
-		StartTime:         times.startTime(),
-		ContainerStatuses: containerStatuses,
+		Phase:                  getPodPhaseFromVirtualizationGroup(vg),
+		Conditions:             getPodConditionsFromVirtualizationGroup(vg, pod, times.firstStart, times.lastUpdate),
+		HostIP:                 p.nodeIPAddress,
+		PodIP:                  podIPAddress(vg),
+		StartTime:              times.startTime(),
+		InitContainerStatuses:  buildInitContainerStatuses(vg, pod, &times),
+		ContainerStatuses:      containerStatuses,
 	}
 }
 
@@ -143,6 +144,41 @@ func buildContainerStatus(ctr resource.Container, spec corev1.Container, created
 		Image:       spec.Image,
 		ContainerID: utils.GetContainerID(resource.ContainerRuntime, spec.Name),
 	}
+}
+
+func buildInitContainerStatuses(vg *client.VirtualizationGroup, pod *corev1.Pod, times *statusTimes) []corev1.ContainerStatus {
+	if len(pod.Spec.InitContainers) == 0 {
+		return nil
+	}
+	statuses := make([]corev1.ContainerStatus, 0, len(pod.Spec.InitContainers))
+	for _, spec := range pod.Spec.InitContainers {
+		ctr, err := getContainerWithName(spec.Name, vg.InitContainers)
+		if err != nil {
+			continue
+		}
+		statuses = append(statuses, buildContainerStatus(ctr, spec, pod.CreationTimestamp.Time, times))
+	}
+	return statuses
+}
+
+func allInitContainersDone(vg *client.VirtualizationGroup, pod *corev1.Pod) bool {
+	if len(pod.Spec.InitContainers) == 0 {
+		return true
+	}
+	for _, spec := range pod.Spec.InitContainers {
+		ctr, err := getContainerWithName(spec.Name, vg.InitContainers)
+		if err != nil {
+			return false
+		}
+		if ctr.State.ExitCode != 0 || !isTerminal(ctr.State.Status) {
+			return false
+		}
+	}
+	return true
+}
+
+func isTerminal(s resource.ContainerStatus) bool {
+	return s.IsTerminal()
 }
 
 // podIPAddress returns the pod's IP from the VM, or empty if no VM exists.
@@ -365,8 +401,12 @@ func containerPhase(containers []resource.Container, networkReady bool) corev1.P
 }
 
 // getPodConditionsFromVirtualizationGroup determines the pod conditions based on the state of the virtualization group.
-func getPodConditionsFromVirtualizationGroup(vg *client.VirtualizationGroup, podCreationTime, firstStart, lastUpdate time.Time) []corev1.PodCondition {
+func getPodConditionsFromVirtualizationGroup(vg *client.VirtualizationGroup, pod *corev1.Pod, firstStart, lastUpdate time.Time) []corev1.PodCondition {
 	initialized, ready := evaluateConditions(vg)
+	if !allInitContainersDone(vg, pod) {
+		initialized = corev1.ConditionFalse
+	}
+	podCreationTime := pod.CreationTimestamp.Time
 
 	return []corev1.PodCondition{
 		{

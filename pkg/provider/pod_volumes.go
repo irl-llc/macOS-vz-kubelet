@@ -22,20 +22,12 @@ func (p *MacOSVZProvider) extractPodVolumeData(ctx context.Context, pod *corev1.
 		PVCs:       make(map[string]*volumes.PVCResolution),
 	}
 
-	// SA data and standalone configmaps both write to data.ConfigMaps
+	// cmMu protects data.ConfigMaps written by two goroutines concurrently.
 	var cmMu sync.Mutex
 	g, ctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
-		cmMu.Lock()
-		defer cmMu.Unlock()
-		return p.populateServiceAccountData(ctx, pod, data)
-	})
-	g.Go(func() error {
-		cmMu.Lock()
-		defer cmMu.Unlock()
-		return p.populateStandaloneConfigMaps(ctx, pod, data)
-	})
+	g.Go(func() error { return p.populateServiceAccountData(ctx, pod, data, &cmMu) })
+	g.Go(func() error { return p.populateStandaloneConfigMaps(ctx, pod, data, &cmMu) })
 	g.Go(func() error { return p.populateSecrets(ctx, pod, data) })
 	g.Go(func() error { return p.populatePVCs(ctx, pod, data) })
 
@@ -46,7 +38,7 @@ func (p *MacOSVZProvider) extractPodVolumeData(ctx context.Context, pod *corev1.
 }
 
 func (p *MacOSVZProvider) populateServiceAccountData(
-	ctx context.Context, pod *corev1.Pod, data *volumes.PodVolumeData,
+	ctx context.Context, pod *corev1.Pod, data *volumes.PodVolumeData, cmMu *sync.Mutex,
 ) error {
 	automount := pod.Spec.AutomountServiceAccountToken == nil ||
 		*pod.Spec.AutomountServiceAccountToken
@@ -55,16 +47,21 @@ func (p *MacOSVZProvider) populateServiceAccountData(
 	}
 
 	for _, cmProj := range findProjectedConfigMaps(pod) {
-		if err := p.fetchConfigMap(ctx, pod.Namespace, cmProj.Name, data.ConfigMaps); err != nil {
+		if err := p.fetchConfigMap(ctx, cmMu, pod.Namespace, cmProj.Name, data.ConfigMaps); err != nil {
 			return err
 		}
 	}
 
+	return p.fetchServiceAccountToken(ctx, pod, data)
+}
+
+func (p *MacOSVZProvider) fetchServiceAccountToken(
+	ctx context.Context, pod *corev1.Pod, data *volumes.PodVolumeData,
+) error {
 	svcProj := findSATokenProjection(pod)
 	if svcProj == nil {
 		return nil
 	}
-
 	token, err := p.createServiceAccountToken(
 		ctx, pod.Namespace, pod.Spec.ServiceAccountName, svcProj,
 	)
@@ -77,13 +74,13 @@ func (p *MacOSVZProvider) populateServiceAccountData(
 
 // populateStandaloneConfigMaps fetches ConfigMaps referenced by standalone ConfigMap volumes.
 func (p *MacOSVZProvider) populateStandaloneConfigMaps(
-	ctx context.Context, pod *corev1.Pod, data *volumes.PodVolumeData,
+	ctx context.Context, pod *corev1.Pod, data *volumes.PodVolumeData, cmMu *sync.Mutex,
 ) error {
 	for _, vol := range pod.Spec.Volumes {
 		if vol.ConfigMap == nil {
 			continue
 		}
-		err := p.fetchConfigMap(ctx, pod.Namespace, vol.ConfigMap.Name, data.ConfigMaps)
+		err := p.fetchConfigMap(ctx, cmMu, pod.Namespace, vol.ConfigMap.Name, data.ConfigMaps)
 		if err == nil {
 			continue
 		}
@@ -164,16 +161,21 @@ func (p *MacOSVZProvider) populatePVCs(
 }
 
 func (p *MacOSVZProvider) fetchConfigMap(
-	ctx context.Context, namespace, name string, dest map[string]*corev1.ConfigMap,
+	ctx context.Context, mu *sync.Mutex, namespace, name string, dest map[string]*corev1.ConfigMap,
 ) error {
-	if _, ok := dest[name]; ok {
+	mu.Lock()
+	_, exists := dest[name]
+	mu.Unlock()
+	if exists {
 		return nil
 	}
 	cm, err := p.k8sClient.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
+	mu.Lock()
 	dest[name] = cm
+	mu.Unlock()
 	return nil
 }
 

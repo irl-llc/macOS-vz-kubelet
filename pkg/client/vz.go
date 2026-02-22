@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -39,6 +40,10 @@ const (
 	// as of now k8s does not support setting custom timeout for post-start command at all.
 	// Setting this constant as default for now (usually post-start should be something lite anyway).
 	PostStartCommandTimeout = 10 * time.Second
+
+	// DefaultInitTimeout caps how long all init containers may run before
+	// the pod is considered failed. Overridden by pod.Spec.ActiveDeadlineSeconds.
+	DefaultInitTimeout = 10 * time.Minute
 )
 
 var (
@@ -50,6 +55,8 @@ var (
 type virtualizationGroupExtras struct {
 	rootDir    string             // root directory for the volumes of the pod
 	cancelFunc context.CancelFunc // context cancellation function for the virtualization group
+
+	initStates []resource.Container // final states of completed init containers
 
 	deleteOnce sync.Once  // ensures that the virtualization group is deleted only once
 	deleteDone chan error // signals that the virtualization group has been deleted
@@ -104,12 +111,14 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 	}()
 
 	vmNames := VMContainerNames(pod)
+	log.G(ctx).Debugf("pod %s/%s runtime routing: vm=%v", pod.Namespace, pod.Name, vmNames)
+	hasNative := hasNativeContainers(pod, vmNames) || len(pod.Spec.InitContainers) > 0
 
 	if len(vmNames) > 1 {
 		return errdefs.InvalidInput("at most one VM container per pod is supported")
 	}
 
-	if hasNativeContainers(pod, vmNames) && c.ContainerClient == nil {
+	if hasNative && c.ContainerClient == nil {
 		return errdefs.InvalidInput("native containers require a container client")
 	}
 
@@ -120,6 +129,12 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 	// Store the extras for the virtualization group before doing any async work
 	c.extras.Store(key, extras)
 
+	// Run init containers sequentially — each must complete before the next starts
+	if err = c.runInitContainers(ctx, pod, extras, volData, creds); err != nil {
+		return err
+	}
+
+	// Launch main containers concurrently
 	g := errgroup.Group{}
 	for _, container := range pod.Spec.Containers {
 		if isVMContainer(container.Name, vmNames) {
@@ -130,6 +145,66 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 	}
 
 	return g.Wait()
+}
+
+func (c *VzClientAPIs) runInitContainers(
+	ctx context.Context, pod *corev1.Pod, extras *virtualizationGroupExtras,
+	volData *volumes.PodVolumeData, creds resource.RegistryCredentialStore,
+) error {
+	ctx, cancel := context.WithTimeout(ctx, initTimeout(pod))
+	defer cancel()
+
+	for _, initCtr := range pod.Spec.InitContainers {
+		state, err := c.runInitContainer(ctx, pod, initCtr, extras.rootDir, volData, creds)
+		extras.initStates = append(extras.initStates, state)
+		if err != nil {
+			return fmt.Errorf("init container %s failed: %w", initCtr.Name, err)
+		}
+	}
+	return nil
+}
+
+// initTimeout returns the deadline for init containers based on
+// pod.Spec.ActiveDeadlineSeconds, falling back to DefaultInitTimeout.
+func initTimeout(pod *corev1.Pod) time.Duration {
+	if pod.Spec.ActiveDeadlineSeconds != nil {
+		return time.Duration(*pod.Spec.ActiveDeadlineSeconds) * time.Second
+	}
+	return DefaultInitTimeout
+}
+
+func (c *VzClientAPIs) runInitContainer(
+	ctx context.Context, pod *corev1.Pod, ctr corev1.Container,
+	rootDir string, volData *volumes.PodVolumeData, creds resource.RegistryCredentialStore,
+) (resource.Container, error) {
+	if err := c.createNativeContainer(ctx, pod, ctr, rootDir, volData, creds); err != nil {
+		return resource.Container{Name: ctr.Name, State: resource.ContainerState{Error: err.Error()}}, err
+	}
+
+	exitCode, err := c.ContainerClient.WaitForContainer(ctx, pod.Namespace, pod.Name, ctr.Name)
+	if err != nil {
+		return resource.Container{Name: ctr.Name, State: resource.ContainerState{Error: err.Error()}}, err
+	}
+
+	containers, err := c.ContainerClient.GetContainers(ctx, pod.Namespace, pod.Name)
+	if err != nil {
+		log.G(ctx).WithError(err).Warnf("failed to get init container state for %s", ctr.Name)
+	}
+	finalState := findContainer(ctr.Name, containers)
+
+	if exitCode != 0 {
+		return finalState, fmt.Errorf("exited with code %d", exitCode)
+	}
+	return finalState, nil
+}
+
+func findContainer(name string, containers []resource.Container) resource.Container {
+	for _, c := range containers {
+		if c.Name == name {
+			return c
+		}
+	}
+	return resource.Container{Name: name}
 }
 
 func (c *VzClientAPIs) createVMFunc(
@@ -394,9 +469,23 @@ func (c *VzClientAPIs) GetVirtualizationGroup(ctx context.Context, namespace, na
 	}
 
 	return &VirtualizationGroup{
+		InitContainers:      c.loadInitStates(namespace, name),
 		Containers:          containers,
 		MacOSVirtualMachine: vmResult,
 	}, err
+}
+
+func (c *VzClientAPIs) loadInitStates(namespace, name string) []resource.Container {
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	extrasVal, ok := c.extras.Load(key)
+	if !ok {
+		return []resource.Container{}
+	}
+	extras, ok := extrasVal.(*virtualizationGroupExtras)
+	if !ok {
+		return []resource.Container{}
+	}
+	return extras.initStates
 }
 
 // GetVirtualizationGroupListResult retrieves a list of all virtualization groups.
@@ -534,7 +623,10 @@ func (c *VzClientAPIs) GetVirtualizationGroupStats(ctx context.Context, pod *cor
 }
 
 func (c *VzClientAPIs) containerStats(ctx context.Context, ns, pod, ctrName string, vmNames map[string]bool) (stats.ContainerStats, error) {
-	if !isVMContainer(ctrName, vmNames) && c.ContainerClient != nil {
+	if !isVMContainer(ctrName, vmNames) {
+		if c.ContainerClient == nil {
+			return stats.ContainerStats{}, fmt.Errorf("no container client for native container %q", ctrName)
+		}
 		return c.ContainerClient.GetContainerStats(ctx, ns, pod, ctrName)
 	}
 	s, err := c.MacOSClient.GetVirtualMachineStats(ctx, ns, pod)

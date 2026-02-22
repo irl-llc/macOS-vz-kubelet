@@ -1047,6 +1047,100 @@ func projectedSecretVolumeContext(
 	}
 }
 
+// --- Path traversal prevention ---
+
+func TestPathTraversalRejected_ConfigMapKey(t *testing.T) {
+	root := t.TempDir()
+	vc := configMapVolumeContext(root, "cm-vol", "evil",
+		map[string]string{"../../etc/passwd": "pwned"}, nil)
+
+	_, err := volumes.CreateContainerMounts(context.Background(), vc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes volume root")
+}
+
+func TestPathTraversalRejected_SecretKey(t *testing.T) {
+	root := t.TempDir()
+	vc := secretVolumeContext(root, "sec-vol", "evil",
+		map[string][]byte{"../../etc/shadow": []byte("pwned")}, nil)
+
+	_, err := volumes.CreateContainerMounts(context.Background(), vc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes volume root")
+}
+
+func TestPathTraversalRejected_KeyToPathItem(t *testing.T) {
+	root := t.TempDir()
+	items := []corev1.KeyToPath{{Key: "k", Path: "../../escape"}}
+	vc := configMapVolumeContext(root, "cm-vol", "evil",
+		map[string]string{"k": "data"}, items)
+
+	_, err := volumes.CreateContainerMounts(context.Background(), vc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes volume root")
+}
+
+// --- Optional secret missing ---
+
+func TestOptionalSecretMissing(t *testing.T) {
+	root := t.TempDir()
+	vc := volumes.VolumeContext{
+		PodVolRoot: root,
+		Pod: &corev1.Pod{Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{{
+				Name: "opt-sec",
+				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+					SecretName: "missing",
+					Optional:   boolPtr(true),
+				}},
+			}},
+		}},
+		Container: corev1.Container{VolumeMounts: []corev1.VolumeMount{
+			{Name: "opt-sec", MountPath: "/secret"},
+		}},
+		Secrets: map[string]*corev1.Secret{},
+	}
+
+	mounts, err := volumes.CreateContainerMounts(context.Background(), vc)
+	require.NoError(t, err)
+	assert.Empty(t, mounts, "optional missing secret should produce no mount")
+}
+
+// --- ConfigMap BinaryData ---
+
+func TestConfigMapBinaryData(t *testing.T) {
+	root := t.TempDir()
+	binContent := []byte{0x00, 0xFF, 0x42, 0x13}
+	vc := volumes.VolumeContext{
+		PodVolRoot: root,
+		Pod: &corev1.Pod{Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{{
+				Name: "cm-bin",
+				VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "bin-cm"},
+				}},
+			}},
+		}},
+		Container: corev1.Container{VolumeMounts: []corev1.VolumeMount{
+			{Name: "cm-bin", MountPath: "/mnt/bin"},
+		}},
+		ConfigMaps: map[string]*corev1.ConfigMap{
+			"bin-cm": {
+				Data:       map[string]string{"text": "hello"},
+				BinaryData: map[string][]byte{"blob": binContent},
+			},
+		},
+	}
+
+	_, err := volumes.CreateContainerMounts(context.Background(), vc)
+	require.NoError(t, err)
+	requireFileContent(t, filepath.Join(root, "cm-bin", "text"), "hello")
+
+	got, err := os.ReadFile(filepath.Join(root, "cm-bin", "blob"))
+	require.NoError(t, err)
+	assert.Equal(t, binContent, got)
+}
+
 func multiSourceProjectionContext(root string) volumes.VolumeContext {
 	return volumes.VolumeContext{
 		PodVolRoot:          root,

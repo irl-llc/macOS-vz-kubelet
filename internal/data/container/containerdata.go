@@ -59,6 +59,35 @@ func (d *ContainerData) RemoveAllContainerInfo(podNamespace, podName string) (ma
 	return containerInfoMap, true
 }
 
+// RemoveContainerInfo removes a single container's info from a pod.
+// Returns the removed info and whether it existed.
+func (d *ContainerData) RemoveContainerInfo(podNamespace, podName, containerName string) (ContainerInfo, bool) {
+	key := types.NamespacedName{Namespace: podNamespace, Name: podName}
+	val, ok := d.data.Load(key)
+	if !ok {
+		return ContainerInfo{}, false
+	}
+	podMap := val.(*sync.Map)
+	infoval, loaded := podMap.LoadAndDelete(containerName)
+	if !loaded {
+		return ContainerInfo{}, false
+	}
+	d.deletePodEntryIfEmpty(key, podMap)
+	return *infoval.(*ContainerInfo), true
+}
+
+// deletePodEntryIfEmpty removes the pod-level sync.Map entry if no containers remain.
+func (d *ContainerData) deletePodEntryIfEmpty(key types.NamespacedName, podMap *sync.Map) {
+	empty := true
+	podMap.Range(func(_, _ interface{}) bool {
+		empty = false
+		return false
+	})
+	if empty {
+		d.data.Delete(key)
+	}
+}
+
 // GetAllContainerInfo retrieves all container information for a specific pod.
 // It returns a map of container names to ContainerInfo and a boolean indicating whether the pod information was found.
 func (d *ContainerData) GetAllContainerInfo(podNamespace, podName string) (map[string]ContainerInfo, bool) {
