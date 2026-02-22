@@ -312,6 +312,8 @@ func (c *VzClientAPIs) createNativeContainer(
 		StdinOnce:       ctr.StdinOnce,
 		PostStartAction: extractPostStart(ctr),
 		RegistryCreds:   containerCreds,
+		SecurityContext: ctr.SecurityContext,
+		Resources:       ctr.Resources,
 	})
 }
 

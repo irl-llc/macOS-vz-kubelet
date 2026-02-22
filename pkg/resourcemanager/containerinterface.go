@@ -32,6 +32,9 @@ type ContainerParams struct {
 	Stdin           bool
 	StdinOnce       bool
 	PostStartAction *resource.ExecAction
+
+	SecurityContext *corev1.SecurityContext
+	Resources       corev1.ResourceRequirements
 }
 
 // ContainersClient is an interface that defines the methods that a ContainersClient implementation should provide.
