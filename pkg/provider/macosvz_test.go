@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourceapi "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
@@ -375,16 +376,91 @@ func TestCreatePod_ImagePullSecrets(t *testing.T) {
 }
 
 func TestUpdatePod(t *testing.T) {
-	ctx := context.Background()
-	vzClient := clientmocks.NewMockVzClientInterface(t)
-	providerConfig := provider.MacOSVZProviderConfig{
-		Platform: defaultPlatform,
-	}
-	p, err := provider.NewMacOSVZProvider(ctx, vzClient, providerConfig)
-	require.NoError(t, err)
+	t.Run("NoPodLister", func(t *testing.T) {
+		ctx := context.Background()
+		vzClient := clientmocks.NewMockVzClientInterface(t)
+		p, err := provider.NewMacOSVZProvider(ctx, vzClient, provider.MacOSVZProviderConfig{
+			Platform: defaultPlatform,
+		})
+		require.NoError(t, err)
 
-	assert.Error(t, p.UpdatePod(ctx, &corev1.Pod{}), "UpdatePod should return an error")
-	vzClient.AssertExpectations(t)
+		pod := updatePodFixture("app", "nginx")
+		assert.NoError(t, p.UpdatePod(ctx, pod), "should succeed without a pod lister")
+	})
+
+	t.Run("MetadataOnlyUpdate", func(t *testing.T) {
+		ctx := context.Background()
+		vzClient := clientmocks.NewMockVzClientInterface(t)
+		p, err := provider.NewMacOSVZProvider(ctx, vzClient, provider.MacOSVZProviderConfig{
+			Platform: defaultPlatform,
+		})
+		require.NoError(t, err)
+
+		pod := updatePodFixture("app", "nginx")
+		pod.Labels = map[string]string{"version": "v2"}
+		assert.NoError(t, p.UpdatePod(ctx, pod))
+	})
+
+	t.Run("ProbeConfigChange", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		vzClient := clientmocks.NewMockVzClientInterface(t)
+		// Stub probe-related calls that may fire from background goroutines
+		vzClient.On("GetVirtualizationGroup", mock.Anything, mock.Anything, mock.Anything).
+			Return(&client.VirtualizationGroup{}, nil).Maybe()
+		vzClient.On("ExecuteContainerCommand", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return(nil).Maybe()
+
+		oldPod := updatePodFixture("app", "nginx")
+		p := setupVZProviderWithPodInformer(t, ctx, vzClient, oldPod)
+
+		newPod := oldPod.DeepCopy()
+		newPod.Spec.Containers[0].LivenessProbe.PeriodSeconds = 30
+		assert.NoError(t, p.UpdatePod(ctx, newPod),
+			"probe config change should trigger restart without error")
+	})
+
+	t.Run("ContainerCountMismatch", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		vzClient := clientmocks.NewMockVzClientInterface(t)
+		vzClient.On("GetVirtualizationGroup", mock.Anything, mock.Anything, mock.Anything).
+			Return(&client.VirtualizationGroup{}, nil).Maybe()
+		vzClient.On("ExecuteContainerCommand", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return(nil).Maybe()
+
+		oldPod := updatePodFixture("app", "nginx")
+		p := setupVZProviderWithPodInformer(t, ctx, vzClient, oldPod)
+
+		newPod := oldPod.DeepCopy()
+		newPod.Spec.Containers = append(newPod.Spec.Containers, corev1.Container{
+			Name: "sidecar", Image: "busybox",
+		})
+		assert.NoError(t, p.UpdatePod(ctx, newPod),
+			"container count change should warn but not error")
+	})
+}
+
+func updatePodFixture(name, image string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:  name,
+				Image: image,
+				LivenessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(8080)},
+					},
+					PeriodSeconds: 10,
+				},
+			}},
+		},
+	}
 }
 
 func TestDeletePod(t *testing.T) {

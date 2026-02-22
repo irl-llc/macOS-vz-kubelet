@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -122,6 +123,9 @@ func (p *MacOSVZProvider) CreatePod(ctx context.Context, pod *corev1.Pod) (err e
 }
 
 // UpdatePod takes a Kubernetes Pod and updates it within the provider.
+// UpdatePod applies in-place updates. Metadata changes are always accepted.
+// Probe configuration changes trigger a probe restart.
+// Unsupported spec changes (image, resources, security) are logged as warnings.
 func (p *MacOSVZProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) (err error) {
 	ctx, span := trace.StartSpan(ctx, "MacOSVZProvider.UpdatePod")
 	defer func() {
@@ -129,7 +133,70 @@ func (p *MacOSVZProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) (err e
 		span.End()
 	}()
 	log.G(ctx).Debug("Received UpdatePod request")
-	return errNotImplemented
+
+	if p.podLister == nil {
+		log.G(ctx).Warn("podLister not configured, skipping update diff")
+		return nil
+	}
+	oldPod, lookupErr := p.podLister.Pods(pod.Namespace).Get(pod.Name)
+	if lookupErr != nil {
+		return fmt.Errorf("look up existing pod for diff: %w", lookupErr)
+	}
+
+	warnUnsupportedChanges(ctx, oldPod, pod)
+	p.restartProbesIfChanged(ctx, oldPod, pod)
+	return nil
+}
+
+func warnUnsupportedChanges(ctx context.Context, oldPod, newPod *corev1.Pod) {
+	if len(oldPod.Spec.Containers) != len(newPod.Spec.Containers) {
+		log.G(ctx).Warnf("container count changed from %d to %d", len(oldPod.Spec.Containers), len(newPod.Spec.Containers))
+	}
+	bound := min(len(oldPod.Spec.Containers), len(newPod.Spec.Containers))
+	for i := 0; i < bound; i++ {
+		warnContainerDiff(ctx, oldPod.Spec.Containers[i], newPod.Spec.Containers[i])
+	}
+}
+
+func warnContainerDiff(ctx context.Context, oldCtr, newCtr corev1.Container) {
+	if oldCtr.Image != newCtr.Image {
+		log.G(ctx).Warnf("container %s: image change not supported in-place", newCtr.Name)
+	}
+	if !reflect.DeepEqual(oldCtr.Resources, newCtr.Resources) {
+		log.G(ctx).Warnf("container %s: resource change not supported in-place", newCtr.Name)
+	}
+	if !reflect.DeepEqual(oldCtr.SecurityContext, newCtr.SecurityContext) {
+		log.G(ctx).Warnf("container %s: security context change not supported in-place", newCtr.Name)
+	}
+}
+
+func (p *MacOSVZProvider) restartProbesIfChanged(ctx context.Context, oldPod, newPod *corev1.Pod) {
+	if !probeSpecsChanged(oldPod, newPod) {
+		return
+	}
+	log.G(ctx).Debug("Probe configuration changed, restarting probes")
+	podKey := types.NamespacedName{Namespace: newPod.Namespace, Name: newPod.Name}
+	p.probeRunner.StopForPod(podKey)
+	p.probeRunner.StartForPod(newPod)
+}
+
+func probeSpecsChanged(oldPod, newPod *corev1.Pod) bool {
+	for i, newCtr := range newPod.Spec.Containers {
+		if i >= len(oldPod.Spec.Containers) {
+			return true
+		}
+		oldCtr := oldPod.Spec.Containers[i]
+		if !reflect.DeepEqual(oldCtr.LivenessProbe, newCtr.LivenessProbe) {
+			return true
+		}
+		if !reflect.DeepEqual(oldCtr.ReadinessProbe, newCtr.ReadinessProbe) {
+			return true
+		}
+		if !reflect.DeepEqual(oldCtr.StartupProbe, newCtr.StartupProbe) {
+			return true
+		}
+	}
+	return len(oldPod.Spec.Containers) != len(newPod.Spec.Containers)
 }
 
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
