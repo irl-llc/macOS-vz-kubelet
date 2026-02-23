@@ -30,3 +30,9 @@ build/
 fastlane/Appfile
 fastlane/Matchfile
 ruby/
+
+# Compiled binary
+virtual-kubelet
+
+# Claude Code local settings
+.claude/
