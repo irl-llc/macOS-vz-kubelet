@@ -31,6 +31,11 @@ const (
 	ContainerStatusUnknown
 )
 
+// IsTerminal reports whether the status represents a final state.
+func (s ContainerStatus) IsTerminal() bool {
+	return s == ContainerStatusDead || s == ContainerStatusOOMKilled
+}
+
 // ContainerState holds information about the current and past state of a container.
 type ContainerState struct {
 	Status     ContainerStatus

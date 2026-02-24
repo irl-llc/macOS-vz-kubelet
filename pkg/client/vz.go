@@ -24,7 +24,6 @@ import (
 	"github.com/virtual-kubelet/virtual-kubelet/trace"
 	stats "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 
-	docker "github.com/moby/moby/client"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -66,27 +65,18 @@ type VzClientAPIs struct {
 }
 
 // NewVzClientAPIs initializes and returns a new VzClientAPIs instance.
-func NewVzClientAPIs(ctx context.Context, eventRecorder event.EventRecorder, networkInterfaceIdentifier, cachePath string, dockerCl *docker.Client) (client *VzClientAPIs) {
+func NewVzClientAPIs(ctx context.Context, eventRecorder event.EventRecorder, networkInterfaceIdentifier, cachePath string, containerClient rm.ContainersClient) *VzClientAPIs {
 	ctx, span := trace.StartSpan(ctx, "VZClient.NewVzClientAPIs")
 	defer span.End()
 
 	// force remove dangling mounts
 	_ = os.RemoveAll(filepath.Join(cachePath, PodMountsDir))
 
-	client = &VzClientAPIs{
-		MacOSClient: rm.NewMacOSClient(ctx, eventRecorder, networkInterfaceIdentifier, cachePath),
-		cachePath:   cachePath,
+	return &VzClientAPIs{
+		MacOSClient:     rm.NewMacOSClient(ctx, eventRecorder, networkInterfaceIdentifier, cachePath),
+		ContainerClient: containerClient,
+		cachePath:       cachePath,
 	}
-
-	containerClient, err := rm.NewDockerClient(ctx, dockerCl, eventRecorder)
-	if err != nil {
-		log.G(ctx).WithError(err).Warn("Failed to create container client")
-	}
-	if containerClient != nil {
-		client.ContainerClient = containerClient
-	}
-
-	return client
 }
 
 // CreateVirtualizationGroup creates a new virtualization group based on the provided Kubernetes pod.
