@@ -11,6 +11,7 @@ import (
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/client"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/event"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/provider"
+	rm "github.com/agoda-com/macOS-vz-kubelet/pkg/resourcemanager"
 
 	docker "github.com/moby/moby/client"
 	"github.com/shirou/gopsutil/v4/host"
@@ -86,7 +87,10 @@ func newProviderFactory(t *testing.T, ctx context.Context, kcl *kubernetes.Clien
 			_ = dockerCl.Close()
 		})
 
-		vzClient := client.NewVzClientAPIs(ctx, eventRecorder, "", cachePath, dockerCl)
+		containerClient, err := rm.NewDockerClient(ctx, dockerCl, eventRecorder)
+		require.NoError(t, err)
+
+		vzClient := client.NewVzClientAPIs(ctx, eventRecorder, "", cachePath, containerClient)
 
 		providerConfig := provider.MacOSVZProviderConfig{
 			NodeName:           nodeName,
