@@ -90,7 +90,7 @@ func NewVzClientAPIs(ctx context.Context, eventRecorder event.EventRecorder, net
 }
 
 // CreateVirtualizationGroup creates a new virtualization group based on the provided Kubernetes pod.
-func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev1.Pod, serviceAccountToken string, configMaps map[string]*corev1.ConfigMap, creds resource.RegistryCredentialStore) (err error) {
+func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev1.Pod, volData *volumes.PodVolumeData, creds resource.RegistryCredentialStore) (err error) {
 	ctx, span := trace.StartSpan(ctx, "VZClient.CreateVirtualizationGroup")
 	key := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
 	extras := &virtualizationGroupExtras{
@@ -150,7 +150,15 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 			return errdefs.AsInvalidInput(err)
 		}
 
-		mounts, err := volumes.CreateContainerMounts(ctx, extras.rootDir, macOSContainer, pod, serviceAccountToken, configMaps)
+		mounts, err := volumes.CreateContainerMounts(ctx, volumes.VolumeContext{
+			PodVolRoot:          extras.rootDir,
+			Pod:                 pod,
+			Container:           macOSContainer,
+			ServiceAccountToken: volData.ServiceAccountToken,
+			ConfigMaps:          volData.ConfigMaps,
+			Secrets:             volData.Secrets,
+			PVCs:                volData.PVCs,
+		})
 		if err != nil {
 			return err
 		}
@@ -187,7 +195,15 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 		g.Go(func() error {
 			containerCreds, _ := creds.ForImage(container.Image)
 
-			mounts, err := volumes.CreateContainerMounts(ctx, extras.rootDir, container, pod, serviceAccountToken, configMaps)
+			mounts, err := volumes.CreateContainerMounts(ctx, volumes.VolumeContext{
+				PodVolRoot:          extras.rootDir,
+				Pod:                 pod,
+				Container:           container,
+				ServiceAccountToken: volData.ServiceAccountToken,
+				ConfigMaps:          volData.ConfigMaps,
+				Secrets:             volData.Secrets,
+				PVCs:                volData.PVCs,
+			})
 			if err != nil {
 				return err
 			}

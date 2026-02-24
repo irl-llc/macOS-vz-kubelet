@@ -208,7 +208,7 @@ func setupNodeProvider(t *testing.T, nodeName string, nodeIPAddress string, daem
 	node, err := nodeutil.NewNode(
 		nodeName,
 		func(cfg nodeutil.ProviderConfig) (nodeutil.Provider, node.NodeProvider, error) {
-			vzClient := clientmock.NewVzClientInterface(t)
+			vzClient := clientmock.NewMockVzClientInterface(t)
 			vzClient.On("GetVirtualizationGroupListResult", mock.Anything).Return(map[types.NamespacedName]*client.VirtualizationGroup{}, nil)
 
 			require.NoError(t, err)
