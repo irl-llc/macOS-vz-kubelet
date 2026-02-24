@@ -26,3 +26,10 @@ packages:
       dir: pkg/client/mocks
       outpkg: mocks
       filename: client.go
+  github.com/agoda-com/macOS-vz-kubelet/pkg/resourcemanager:
+    interfaces:
+      CLIExecutor:
+    config:
+      dir: pkg/resourcemanager/mocks
+      outpkg: mocks
+      filename: cli_executor.go
