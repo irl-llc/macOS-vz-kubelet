@@ -104,6 +104,27 @@ func (c *AppleContainerCLI) RemoveImage(ctx context.Context, image string) error
 	return err
 }
 
+// CreateNetwork creates a named vmnet network.
+func (c *AppleContainerCLI) CreateNetwork(ctx context.Context, name string) error {
+	_, err := c.run(ctx, "network", "create", name)
+	return err
+}
+
+// RemoveNetwork deletes a named vmnet network.
+func (c *AppleContainerCLI) RemoveNetwork(ctx context.Context, name string) error {
+	_, err := c.run(ctx, "network", "rm", name)
+	return err
+}
+
+// InspectContainerIP returns the vmnet IP of a container from inspect JSON.
+func (c *AppleContainerCLI) InspectContainerIP(ctx context.Context, id string) (string, error) {
+	out, err := c.run(ctx, "inspect", id)
+	if err != nil {
+		return "", fmt.Errorf("inspect ip %s: %w", id, err)
+	}
+	return parseInspectIP(out)
+}
+
 // ContainerStats returns CPU nanoseconds and memory bytes for a container.
 func (c *AppleContainerCLI) ContainerStats(ctx context.Context, id string) (uint64, uint64, error) {
 	out, err := c.run(ctx, "stats", "--format", "json", "--no-stream", id)
@@ -188,9 +209,20 @@ func buildRunArgs(args ContainerCreateArgs) []string {
 	a := []string{"run", "--detach", "--name", args.Name}
 	a = appendEnvArgs(a, args.Env)
 	a = appendBindArgs(a, args.Binds)
+	a = appendNetworkFlags(a, args)
 	a = appendRunFlags(a, args)
 	a = append(a, args.Image)
 	a = appendCommandAndArgs(a, args.Command, args.Args)
+	return a
+}
+
+func appendNetworkFlags(a []string, args ContainerCreateArgs) []string {
+	if args.Network != "" {
+		a = append(a, "--network", args.Network)
+	}
+	for _, dns := range args.DNS {
+		a = append(a, "--dns", dns)
+	}
 	return a
 }
 
@@ -326,7 +358,13 @@ func filterContainersByPrefix(data []byte, prefix string) ([]string, error) {
 }
 
 type cliInspectResult struct {
-	State cliContainerState `json:"state"`
+	State   cliContainerState  `json:"state"`
+	Network *cliInspectNetwork `json:"network,omitempty"`
+}
+
+// cliInspectNetwork captures the network portion of `container inspect` output.
+type cliInspectNetwork struct {
+	IPAddress string `json:"ipAddress"`
 }
 
 type cliContainerState struct {
@@ -343,6 +381,17 @@ func parseInspectJSON(ctx context.Context, data []byte) (resource.ContainerState
 		return resource.ContainerState{}, fmt.Errorf("parse inspect: %w", err)
 	}
 	return mapCLIState(ctx, result.State), nil
+}
+
+func parseInspectIP(data []byte) (string, error) {
+	var result cliInspectResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", fmt.Errorf("parse inspect ip: %w", err)
+	}
+	if result.Network == nil {
+		return "", nil
+	}
+	return result.Network.IPAddress, nil
 }
 
 func mapCLIState(ctx context.Context, s cliContainerState) resource.ContainerState {

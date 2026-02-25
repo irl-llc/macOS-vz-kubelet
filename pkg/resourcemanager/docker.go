@@ -667,6 +667,16 @@ func (c *DockerClient) GetContainerStats(ctx context.Context, podNs, podName str
 	}, nil
 }
 
+// CreatePodNetwork is a no-op for Docker — Docker handles networking internally.
+func (c *DockerClient) CreatePodNetwork(_ context.Context, _ string) error {
+	return nil
+}
+
+// DeletePodNetwork is a no-op for Docker — Docker handles networking internally.
+func (c *DockerClient) DeletePodNetwork(_ context.Context, _ string) error {
+	return nil
+}
+
 // getActiveContainers lists all active containers that match the specified name prefix.
 func getActiveContainers(ctx context.Context, client *dockercl.Client) (map[k8stypes.NamespacedName][]string, error) {
 	filterArgs := filters.NewArgs(filters.Arg("name", ContainerNamePrefix+"_*"))

@@ -910,7 +910,7 @@ func TestAttachToContainer(t *testing.T) {
 // 	vzClient.AssertExpectations(t)
 // }
 
-func TestPortForward(t *testing.T) {
+func TestPortForward_NoIP(t *testing.T) {
 	ctx := context.Background()
 	vzClient := clientmocks.NewMockVzClientInterface(t)
 	providerConfig := provider.MacOSVZProviderConfig{
@@ -919,13 +919,47 @@ func TestPortForward(t *testing.T) {
 	p, err := provider.NewMacOSVZProvider(ctx, vzClient, providerConfig)
 	require.NoError(t, err)
 
+	// Pod has no IP — should error
+	vzClient.On("GetVirtualizationGroup", ctx, "ns", "pod").
+		Return(&client.VirtualizationGroup{
+			Containers: []resource.Container{{Name: "web"}},
+		}, nil)
+
 	reader, writer := io.Pipe()
 	rwc := struct {
 		io.Reader
 		io.Writer
 		io.Closer
 	}{Reader: reader, Writer: writer, Closer: writer}
-	err = p.PortForward(ctx, "", "", 10, rwc)
-	assert.Error(t, err, "PortForward should return an error")
+	err = p.PortForward(ctx, "ns", "pod", 10, rwc)
+	assert.Error(t, err, "PortForward should return an error when pod has no IP")
+	vzClient.AssertExpectations(t)
+}
+
+func TestPortForward_WithIP(t *testing.T) {
+	ctx := context.Background()
+	vzClient := clientmocks.NewMockVzClientInterface(t)
+	providerConfig := provider.MacOSVZProviderConfig{
+		Platform: defaultPlatform,
+	}
+	p, err := provider.NewMacOSVZProvider(ctx, vzClient, providerConfig)
+	require.NoError(t, err)
+
+	// Pod has IP but port is unreachable — dial will fail
+	vzClient.On("GetVirtualizationGroup", ctx, "ns", "pod").
+		Return(&client.VirtualizationGroup{
+			Containers: []resource.Container{
+				{Name: "web", IPAddress: "127.0.0.1"},
+			},
+		}, nil)
+
+	reader, writer := io.Pipe()
+	rwc := struct {
+		io.Reader
+		io.Writer
+		io.Closer
+	}{Reader: reader, Writer: writer, Closer: writer}
+	err = p.PortForward(ctx, "ns", "pod", 19999, rwc)
+	assert.Error(t, err, "PortForward should error when port is unreachable")
 	vzClient.AssertExpectations(t)
 }

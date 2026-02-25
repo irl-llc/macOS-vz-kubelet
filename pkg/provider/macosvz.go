@@ -86,9 +86,6 @@ func NewMacOSVZProvider(ctx context.Context, vzClient client.VzClientInterface, 
 	return p, nil
 }
 
-var (
-	errNotImplemented = fmt.Errorf("not implemented by MacOS provider")
-)
 
 // CreatePod takes a Kubernetes Pod and deploys it within the MacOS provider.
 func (p *MacOSVZProvider) CreatePod(ctx context.Context, pod *corev1.Pod) (err error) {
@@ -416,7 +413,7 @@ func (p *MacOSVZProvider) AttachToContainer(ctx context.Context, namespace, podN
 	return p.vzClient.AttachToContainer(ctx, namespace, podName, containerName, attach)
 }
 
-// PortForward forwards a local port to a port on the pod
+// PortForward forwards a local port to a port on the pod via TCP proxy.
 func (p *MacOSVZProvider) PortForward(ctx context.Context, namespace, pod string, port int32, stream io.ReadWriteCloser) (err error) {
 	ctx, span := trace.StartSpan(ctx, "MacOSVZProvider.PortForward")
 	defer func() {
@@ -424,5 +421,14 @@ func (p *MacOSVZProvider) PortForward(ctx context.Context, namespace, pod string
 		span.End()
 	}()
 	log.G(ctx).Debug("Received PortForward request")
-	return errNotImplemented
+
+	vg, err := p.vzClient.GetVirtualizationGroup(ctx, namespace, pod)
+	if err != nil {
+		return err
+	}
+	ip := podIPAddress(vg)
+	if ip == "" {
+		return fmt.Errorf("pod %s/%s has no IP address", namespace, pod)
+	}
+	return proxyTCP(ctx, ip, port, stream)
 }

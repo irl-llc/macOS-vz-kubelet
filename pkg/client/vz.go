@@ -53,8 +53,9 @@ var (
 
 // virtualizationGroupExtras contains additional information for a virtualization group.
 type virtualizationGroupExtras struct {
-	rootDir    string             // root directory for the volumes of the pod
-	cancelFunc context.CancelFunc // context cancellation function for the virtualization group
+	rootDir     string             // root directory for the volumes of the pod
+	cancelFunc  context.CancelFunc // context cancellation function for the virtualization group
+	networkName string             // per-pod vmnet network (empty if no native containers)
 
 	initStates []resource.Container // final states of completed init containers
 
@@ -67,12 +68,13 @@ type VzClientAPIs struct {
 	MacOSClient     *rm.MacOSClient
 	ContainerClient rm.ContainersClient // Optional
 
-	cachePath string
-	extras    sync.Map // map[types.NamespacedName]*virtualizationGroupExtras
+	cachePath  string
+	clusterDNS string   // cluster DNS IP for service discovery
+	extras     sync.Map // map[types.NamespacedName]*virtualizationGroupExtras
 }
 
 // NewVzClientAPIs initializes and returns a new VzClientAPIs instance.
-func NewVzClientAPIs(ctx context.Context, eventRecorder event.EventRecorder, networkInterfaceIdentifier, cachePath string, containerClient rm.ContainersClient) *VzClientAPIs {
+func NewVzClientAPIs(ctx context.Context, eventRecorder event.EventRecorder, networkInterfaceIdentifier, cachePath, clusterDNS string, containerClient rm.ContainersClient) *VzClientAPIs {
 	ctx, span := trace.StartSpan(ctx, "VZClient.NewVzClientAPIs")
 	defer span.End()
 
@@ -83,6 +85,7 @@ func NewVzClientAPIs(ctx context.Context, eventRecorder event.EventRecorder, net
 		MacOSClient:     rm.NewMacOSClient(ctx, eventRecorder, networkInterfaceIdentifier, cachePath),
 		ContainerClient: containerClient,
 		cachePath:       cachePath,
+		clusterDNS:      clusterDNS,
 	}
 }
 
@@ -125,6 +128,15 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 	// Due to the nature of virtual kubelet CreatePod context,
 	// we need to handle the context cancellation on demand ourselves
 	ctx, extras.cancelFunc = context.WithCancel(ctx)
+
+	// Create per-pod vmnet network for native containers
+	if hasNative && c.ContainerClient != nil {
+		netName := rm.PodNetworkName(string(pod.UID))
+		if err = c.ContainerClient.CreatePodNetwork(ctx, netName); err != nil {
+			return fmt.Errorf("create pod network: %w", err)
+		}
+		extras.networkName = netName
+	}
 
 	// Store the extras for the virtualization group before doing any async work
 	c.extras.Store(key, extras)
@@ -296,6 +308,9 @@ func (c *VzClientAPIs) createNativeContainer(
 		return err
 	}
 
+	networkName := c.podNetworkName(pod)
+	dns := resolveDNS(pod, c.clusterDNS)
+
 	return c.ContainerClient.CreateContainer(ctx, rm.ContainerParams{
 		PodNamespace:    pod.Namespace,
 		PodName:         pod.Name,
@@ -314,7 +329,44 @@ func (c *VzClientAPIs) createNativeContainer(
 		RegistryCreds:   containerCreds,
 		SecurityContext: ctr.SecurityContext,
 		Resources:       ctr.Resources,
+		Network:         networkName,
+		DNS:             dns,
 	})
+}
+
+// podNetworkName returns the network name for a pod from its extras, if set.
+func (c *VzClientAPIs) podNetworkName(pod *corev1.Pod) string {
+	key := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
+	val, ok := c.extras.Load(key)
+	if !ok {
+		return ""
+	}
+	extras, ok := val.(*virtualizationGroupExtras)
+	if !ok {
+		return ""
+	}
+	return extras.networkName
+}
+
+// resolveDNS determines DNS servers based on pod spec and cluster configuration.
+func resolveDNS(pod *corev1.Pod, clusterDNS string) []string {
+	if hasPodDNSOverride(pod) {
+		return pod.Spec.DNSConfig.Nameservers
+	}
+	if pod.Spec.DNSPolicy == corev1.DNSDefault {
+		return nil
+	}
+	// ClusterFirst (default) or ClusterFirstWithHostNet
+	if clusterDNS != "" {
+		return []string{clusterDNS}
+	}
+	return nil
+}
+
+func hasPodDNSOverride(pod *corev1.Pod) bool {
+	return pod.Spec.DNSPolicy == corev1.DNSNone &&
+		pod.Spec.DNSConfig != nil &&
+		len(pod.Spec.DNSConfig.Nameservers) > 0
 }
 
 func resolveMounts(
@@ -402,6 +454,13 @@ func (c *VzClientAPIs) DeleteVirtualizationGroup(ctx context.Context, namespace,
 		}
 
 		wg.Wait() // Wait for both operations to complete
+
+		// Clean up the pod network after containers are removed
+		if extras.networkName != "" && c.ContainerClient != nil {
+			if netErr := c.ContainerClient.DeletePodNetwork(ctx, extras.networkName); netErr != nil {
+				log.G(ctx).WithError(netErr).Warn("Failed to delete pod network")
+			}
+		}
 
 		switch {
 		case vmErr != nil && containerErr != nil:

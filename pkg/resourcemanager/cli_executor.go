@@ -39,6 +39,15 @@ type CLIExecutor interface {
 
 	// ContainerStats returns CPU (nanoseconds) and memory (bytes) usage.
 	ContainerStats(ctx context.Context, id string) (cpuNano uint64, memBytes uint64, err error)
+
+	// CreateNetwork creates a named vmnet network.
+	CreateNetwork(ctx context.Context, name string) error
+
+	// RemoveNetwork deletes a named vmnet network.
+	RemoveNetwork(ctx context.Context, name string) error
+
+	// InspectContainerIP returns the vmnet IP address of a running container.
+	InspectContainerIP(ctx context.Context, id string) (string, error)
 }
 
 // ContainerCreateArgs holds parameters for creating a container via CLI.
@@ -62,4 +71,8 @@ type ContainerCreateArgs struct {
 	// Resources
 	MemoryLimitBytes int64
 	CPULimit         float64 // number of CPUs (fractional)
+
+	// Networking
+	Network string   // vmnet network name
+	DNS     []string // DNS server addresses
 }

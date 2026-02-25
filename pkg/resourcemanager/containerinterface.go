@@ -35,6 +35,10 @@ type ContainerParams struct {
 
 	SecurityContext *corev1.SecurityContext
 	Resources       corev1.ResourceRequirements
+
+	// Networking
+	Network string   // vmnet network name for the pod
+	DNS     []string // cluster DNS server addresses
 }
 
 // ContainersClient is an interface that defines the methods that a ContainersClient implementation should provide.
@@ -51,4 +55,10 @@ type ContainersClient interface {
 	AttachToContainer(ctx context.Context, namespace, name, containerName string, attach api.AttachIO) error
 	IsContainerPresent(ctx context.Context, podNs, podName, containerName string) bool
 	GetContainerStats(ctx context.Context, podNs, podName string, containerName string) (stats.ContainerStats, error)
+
+	// CreatePodNetwork creates a per-pod vmnet network for inter-container communication.
+	CreatePodNetwork(ctx context.Context, name string) error
+
+	// DeletePodNetwork removes a per-pod vmnet network.
+	DeletePodNetwork(ctx context.Context, name string) error
 }
