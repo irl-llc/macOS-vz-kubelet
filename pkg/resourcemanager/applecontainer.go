@@ -11,6 +11,7 @@ import (
 
 	containerdata "github.com/agoda-com/macOS-vz-kubelet/internal/data/container"
 	"github.com/agoda-com/macOS-vz-kubelet/internal/node"
+	"github.com/agoda-com/macOS-vz-kubelet/internal/volumes"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/event"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/resource"
 
@@ -25,11 +26,20 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 )
 
+// cpuSnapshot stores a single CPU reading for computing instantaneous usage rates.
+type cpuSnapshot struct {
+	nanos uint64
+	time  time.Time
+}
+
 // AppleContainerClient manages containers via Apple's `container` CLI (macOS 26+).
 type AppleContainerClient struct {
 	cli           CLIExecutor
 	eventRecorder event.EventRecorder
 	data          containerdata.ContainerData
+
+	cpuMu        sync.Mutex
+	cpuSnapshots map[string]cpuSnapshot // keyed by "ns/pod/container"
 }
 
 // NewAppleContainerClient creates a new container client wrapping the Apple `container` CLI.
@@ -44,6 +54,7 @@ func NewAppleContainerClient(ctx context.Context, cli CLIExecutor, eventRecorder
 	client := &AppleContainerClient{
 		cli:           cli,
 		eventRecorder: eventRecorder,
+		cpuSnapshots:  make(map[string]cpuSnapshot),
 	}
 
 	if err := client.cleanupDanglingContainers(ctx); err != nil {
@@ -379,46 +390,80 @@ func (c *AppleContainerClient) GetContainerStats(ctx context.Context, podNs, pod
 		return s, err
 	}
 
-	now := metav1.NewTime(time.Now())
+	now := time.Now()
+	nanoCores := c.computeNanoCores(podNs, podName, containerName, cpuNano, now)
+	metaNow := metav1.NewTime(now)
 	return stats.ContainerStats{
 		Name: containerName,
 		CPU: &stats.CPUStats{
-			Time:                 now,
+			Time:                 metaNow,
 			UsageCoreNanoSeconds: &cpuNano,
+			UsageNanoCores:       nanoCores,
 		},
 		Memory: &stats.MemoryStats{
-			Time:       now,
-			UsageBytes: &memBytes,
+			Time:            metaNow,
+			UsageBytes:      &memBytes,
+			WorkingSetBytes: &memBytes, // best approximation without cache breakdown
 		},
 	}, nil
 }
 
+// computeNanoCores derives instantaneous CPU usage from successive cumulative readings.
+// Returns nil on the first call (no prior snapshot to diff against).
+func (c *AppleContainerClient) computeNanoCores(podNs, podName, container string, cpuNano uint64, now time.Time) *uint64 {
+	key := podNs + "/" + podName + "/" + container
+
+	c.cpuMu.Lock()
+	prev, hasPrev := c.cpuSnapshots[key]
+	c.cpuSnapshots[key] = cpuSnapshot{nanos: cpuNano, time: now}
+	c.cpuMu.Unlock()
+
+	if !hasPrev {
+		return nil
+	}
+	elapsed := now.Sub(prev.time)
+	if elapsed <= 0 {
+		return nil
+	}
+	rate := uint64(float64(cpuNano-prev.nanos) / elapsed.Seconds())
+	return &rate
+}
+
 // containerCreateArgs builds the CLI arguments for container creation.
 func containerCreateArgs(params ContainerParams, containerName string) ContainerCreateArgs {
-	env := make([]string, len(params.Env))
-	for i, e := range params.Env {
-		env[i] = e.Name + "=" + e.Value
-	}
-
-	binds := make([]string, len(params.Mounts))
-	for i, m := range params.Mounts {
-		ro := "rw"
-		if m.ReadOnly {
-			ro = "ro"
-		}
-		binds[i] = fmt.Sprintf("%s:%s:%s", m.HostPath, m.ContainerPath, ro)
-	}
-
-	return ContainerCreateArgs{
+	args := ContainerCreateArgs{
 		Name:       containerName,
 		Image:      params.Image,
-		Env:        env,
-		Binds:      binds,
+		Env:        formatEnv(params.Env),
+		Binds:      formatBinds(params.Mounts),
 		Command:    params.Command,
 		Args:       params.Args,
 		WorkingDir: params.WorkingDir,
 		TTY:        params.TTY,
 		Stdin:      params.Stdin,
 	}
+	applySecurityContext(&args, params.SecurityContext)
+	applyResources(&args, params.Resources)
+	return args
+}
+
+func formatEnv(envVars []corev1.EnvVar) []string {
+	env := make([]string, len(envVars))
+	for i, e := range envVars {
+		env[i] = e.Name + "=" + e.Value
+	}
+	return env
+}
+
+func formatBinds(mounts []volumes.Mount) []string {
+	binds := make([]string, len(mounts))
+	for i, m := range mounts {
+		ro := "rw"
+		if m.ReadOnly {
+			ro = "ro"
+		}
+		binds[i] = fmt.Sprintf("%s:%s:%s", m.HostPath, m.ContainerPath, ro)
+	}
+	return binds
 }
 

@@ -53,13 +53,13 @@ type ContainerCreateArgs struct {
 	TTY        bool
 	Stdin      bool
 
-	// Security fields
-	User            string
-	ReadOnlyRootFS  bool
-	CapAdd          []string
-	CapDrop         []string
+	// Security
+	User           string // uid:gid
+	ReadOnlyRootFS bool
+	CapAdd         []string
+	CapDrop        []string
 
-	// Resource limit fields
+	// Resources
 	MemoryLimitBytes int64
-	CPULimit         float64
+	CPULimit         float64 // number of CPUs (fractional)
 }

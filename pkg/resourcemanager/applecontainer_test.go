@@ -241,6 +241,64 @@ func TestGetContainerStats_NotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestGetContainerStats_FirstCallNilNanoCores(t *testing.T) {
+	client, cli, rec := newTestClient(t)
+	ctx := context.Background()
+
+	stubCreate(cli, rec, "cid-1")
+	require.NoError(t, client.CreateContainer(ctx, testContainerParams()))
+	awaitCall(t, &cli.Mock, "CreateAndStartContainer")
+
+	cli.On("ContainerStats", mock.Anything, "cid-1").Return(uint64(5e9), uint64(100e6), nil)
+
+	s, err := client.GetContainerStats(ctx, "ns", "pod", "ctr")
+	require.NoError(t, err)
+	assert.NotNil(t, s.CPU.UsageCoreNanoSeconds)
+	assert.Nil(t, s.CPU.UsageNanoCores, "first call has no prior snapshot")
+	assert.NotNil(t, s.Memory.WorkingSetBytes)
+	assert.Equal(t, *s.Memory.UsageBytes, *s.Memory.WorkingSetBytes)
+}
+
+func TestGetContainerStats_SecondCallComputesNanoCores(t *testing.T) {
+	client, cli, rec := newTestClient(t)
+	ctx := context.Background()
+
+	stubCreate(cli, rec, "cid-1")
+	require.NoError(t, client.CreateContainer(ctx, testContainerParams()))
+	awaitCall(t, &cli.Mock, "CreateAndStartContainer")
+
+	cli.On("ContainerStats", mock.Anything, "cid-1").Return(uint64(5e9), uint64(100e6), nil).Once()
+	cli.On("ContainerStats", mock.Anything, "cid-1").Return(uint64(6e9), uint64(120e6), nil).Once()
+
+	_, err := client.GetContainerStats(ctx, "ns", "pod", "ctr")
+	require.NoError(t, err)
+
+	s, err := client.GetContainerStats(ctx, "ns", "pod", "ctr")
+	require.NoError(t, err)
+	require.NotNil(t, s.CPU.UsageNanoCores, "second call should compute rate")
+	assert.True(t, *s.CPU.UsageNanoCores > 0)
+}
+
+func stubCreate(cli *climocks.MockCLIExecutor, rec *eventmocks.MockEventRecorder, id string) {
+	cli.On("PullImage", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	cli.On("CreateAndStartContainer", mock.Anything, mock.AnythingOfType("resourcemanager.ContainerCreateArgs")).
+		Return(id, nil)
+	rec.On("PullingImage", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	rec.On("PulledImage", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	rec.On("CreatedContainer", mock.Anything, mock.Anything).Return()
+	rec.On("StartedContainer", mock.Anything, mock.Anything).Return()
+}
+
+func testContainerParams() rm.ContainerParams {
+	return rm.ContainerParams{
+		PodNamespace:    "ns",
+		PodName:         "pod",
+		Name:            "ctr",
+		Image:           "busybox",
+		ImagePullPolicy: corev1.PullNever,
+	}
+}
+
 // --- containerCreateArgs tests ---
 
 func TestContainerCreateArgs_EnvAndBinds(t *testing.T) {

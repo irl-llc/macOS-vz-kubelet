@@ -492,6 +492,53 @@ func TestClientIntegration_WaitForContainerNonZeroExit(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestClientIntegration_SecurityContext verifies SecurityContext fields
+// (RunAsUser, ReadOnlyRootFilesystem) are propagated through the CLI.
+func TestClientIntegration_SecurityContext(t *testing.T) {
+	skipUnlessServicesRunning(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	client := newIntegrationClient(t, ctx)
+
+	const (
+		ns  = "integration"
+		pod = "secctx-pod"
+		ctr = "app"
+	)
+	t.Cleanup(func() { _ = client.RemoveContainers(context.Background(), ns, pod, 0) })
+
+	uid := int64(1000)
+	err := client.CreateContainer(ctx, rm.ContainerParams{
+		PodNamespace:    ns,
+		PodName:         pod,
+		Name:            ctr,
+		Image:           integrationClientImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:             &uid,
+			ReadOnlyRootFilesystem: boolPtr(true),
+		},
+		Command: []string{"sleep", "300"},
+	})
+	require.NoError(t, err)
+	awaitRunning(t, ctx, client, ns, pod, ctr, 30*time.Second)
+
+	// Verify user
+	var stdout bytes.Buffer
+	attach := newExecCapture(&stdout)
+	err = client.ExecInContainer(ctx, ns, pod, ctr, []string{"id", "-u"}, attach)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "1000")
+
+	// Verify read-only root filesystem
+	stdout.Reset()
+	writeErr := client.ExecInContainer(ctx, ns, pod, ctr, []string{"touch", "/test-readonly"}, attach)
+	assert.Error(t, writeErr, "write to read-only rootfs should fail")
+}
+
+func boolPtr(v bool) *bool { return &v }
+
 // newExecCapture creates an AttachIO that captures stdout.
 func newExecCapture(stdout *bytes.Buffer) *execCapture {
 	return &execCapture{stdout: stdout}
