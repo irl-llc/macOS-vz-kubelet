@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/virtual-kubelet/virtual-kubelet/log"
 	corev1 "k8s.io/api/core/v1"
@@ -197,14 +198,14 @@ func writeProjectionSource(
 }
 
 func writeServiceAccountToken(hostPath string, proj *corev1.ServiceAccountTokenProjection, token string) error {
-	dest := filepath.Join(hostPath, proj.Path)
+	dest, err := safeJoin(hostPath, proj.Path)
+	if err != nil {
+		return fmt.Errorf("service account token path: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), DefaultDirMode); err != nil {
 		return fmt.Errorf("write service account token dir: %w", err)
 	}
-	if err := os.WriteFile(dest, []byte(token), DefaultFileMode); err != nil {
-		return fmt.Errorf("write service account token: %w", err)
-	}
-	return nil
+	return os.WriteFile(dest, []byte(token), DefaultFileMode)
 }
 
 func writeConfigMapProjection(
@@ -330,7 +331,10 @@ func writeDownwardAPIItem(
 	if item.Mode != nil {
 		mode = os.FileMode(*item.Mode)
 	}
-	dest := filepath.Join(hostPath, item.Path)
+	dest, pathErr := safeJoin(hostPath, item.Path)
+	if pathErr != nil {
+		return fmt.Errorf("downwardAPI item path: %w", pathErr)
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), DefaultDirMode); err != nil {
 		return fmt.Errorf("write downwardAPI dir: %w", err)
 	}
@@ -350,17 +354,50 @@ func resolvePVCVolume(
 }
 
 // writeConfigMapData writes config map data to the host path. When items is non-empty,
-// only the specified keys are written; otherwise all keys are written.
+// only the specified keys are written; otherwise all keys (Data + BinaryData) are written.
 func writeConfigMapData(hostPath string, cm *corev1.ConfigMap, items []corev1.KeyToPath) error {
 	if len(items) > 0 {
-		return writeKeyedEntries(hostPath, items, func(k string) []byte { return []byte(cm.Data[k]) })
+		return writeKeyedEntries(hostPath, items, configMapLookup(cm))
 	}
-	for key, value := range cm.Data {
-		if err := os.WriteFile(filepath.Join(hostPath, key), []byte(value), DefaultFileMode); err != nil {
+	if err := writeStringEntries(hostPath, cm.Data); err != nil {
+		return err
+	}
+	return writeBinaryEntries(hostPath, cm.BinaryData)
+}
+
+func configMapLookup(cm *corev1.ConfigMap) func(string) []byte {
+	return func(k string) []byte {
+		if v, ok := cm.BinaryData[k]; ok {
+			return v
+		}
+		return []byte(cm.Data[k])
+	}
+}
+
+func writeStringEntries(hostPath string, data map[string]string) error {
+	for key, value := range data {
+		if err := writeFileAt(hostPath, key, []byte(value)); err != nil {
 			return fmt.Errorf("write configMap key %s: %w", key, err)
 		}
 	}
 	return nil
+}
+
+func writeBinaryEntries(hostPath string, data map[string][]byte) error {
+	for key, value := range data {
+		if err := writeFileAt(hostPath, key, value); err != nil {
+			return fmt.Errorf("write configMap binary key %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func writeFileAt(hostPath, name string, content []byte) error {
+	dest, err := safeJoin(hostPath, name)
+	if err != nil {
+		return fmt.Errorf("path %s: %w", name, err)
+	}
+	return os.WriteFile(dest, content, DefaultFileMode)
 }
 
 // writeSecretData writes secret data to the host path. When items is non-empty,
@@ -370,7 +407,7 @@ func writeSecretData(hostPath string, secret *corev1.Secret, items []corev1.KeyT
 		return writeKeyedEntries(hostPath, items, func(k string) []byte { return secret.Data[k] })
 	}
 	for key, value := range secret.Data {
-		if err := os.WriteFile(filepath.Join(hostPath, key), value, DefaultFileMode); err != nil {
+		if err := writeFileAt(hostPath, key, value); err != nil {
 			return fmt.Errorf("write secret key %s: %w", key, err)
 		}
 	}
@@ -384,7 +421,10 @@ func writeKeyedEntries(hostPath string, items []corev1.KeyToPath, lookup func(st
 		if item.Mode != nil {
 			mode = os.FileMode(*item.Mode)
 		}
-		dest := filepath.Join(hostPath, item.Path)
+		dest, pathErr := safeJoin(hostPath, item.Path)
+		if pathErr != nil {
+			return fmt.Errorf("key %s path: %w", item.Key, pathErr)
+		}
 		if err := os.MkdirAll(filepath.Dir(dest), DefaultDirMode); err != nil {
 			return fmt.Errorf("write dir for key %s: %w", item.Key, err)
 		}
@@ -400,6 +440,19 @@ func defaultModeOr(mode *int32, fallback os.FileMode) os.FileMode {
 		return os.FileMode(*mode)
 	}
 	return fallback
+}
+
+// safeJoin joins base and unsafePath, returning an error if the result escapes base.
+func safeJoin(base, unsafePath string) (string, error) {
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", fmt.Errorf("resolve base %q: %w", base, err)
+	}
+	joined := filepath.Join(absBase, unsafePath)
+	if !strings.HasPrefix(joined, absBase+string(filepath.Separator)) && joined != absBase {
+		return "", fmt.Errorf("path %q escapes volume root %q", unsafePath, base)
+	}
+	return joined, nil
 }
 
 // findPodVolumeSpec searches for a particular volume spec by name in the Pod spec.

@@ -117,16 +117,15 @@ func (c *AppleContainerCLI) registryLogin(ctx context.Context, creds resource.Re
 	cmd := exec.CommandContext(ctx, c.binary, "registry", "login",
 		"--username", creds.Username, "--password-stdin", creds.Server)
 	cmd.Stdin = strings.NewReader(creds.Password)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("registry login: %s: %w", string(out), err)
+	if _, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("registry login to %s failed: %w", creds.Server, err)
 	}
 	return nil
 }
 
 // run executes the CLI synchronously and returns stdout.
 func (c *AppleContainerCLI) run(ctx context.Context, args ...string) ([]byte, error) {
-	log.G(ctx).Debugf("container %s", strings.Join(args, " "))
+	log.G(ctx).Debugf("container %s", strings.Join(redactArgs(args), " "))
 	cmd := exec.CommandContext(ctx, c.binary, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -145,6 +144,7 @@ func (c *AppleContainerCLI) stream(ctx context.Context, args ...string) (io.Read
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		stdout.Close()
 		return nil, err
 	}
 	return &cmdReadCloser{cmd: cmd, pipe: stdout}, nil
@@ -287,6 +287,21 @@ func buildAttachShellArgs(name string, attach api.AttachIO) []string {
 		args = append(args, "--interactive")
 	}
 	return append(args, name, "/bin/sh")
+}
+
+// redactArgs replaces values following --env flags with redacted versions.
+func redactArgs(args []string) []string {
+	redacted := make([]string, len(args))
+	copy(redacted, args)
+	for i, a := range redacted {
+		if a != "--env" || i+1 >= len(redacted) {
+			continue
+		}
+		if k, _, ok := strings.Cut(redacted[i+1], "="); ok {
+			redacted[i+1] = k + "=***"
+		}
+	}
+	return redacted
 }
 
 // --- JSON parsing ---

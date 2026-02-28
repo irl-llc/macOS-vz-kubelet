@@ -17,6 +17,7 @@ import (
 // VirtualizationGroup represents a group of macOS virtual machines and containers.
 type VirtualizationGroup struct {
 	MacOSVirtualMachine resource.VirtualMachine // nil when pod has no VM containers
+	InitContainers      []resource.Container
 	Containers          []resource.Container
 }
 

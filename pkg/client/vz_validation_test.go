@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/resource"
 	"github.com/stretchr/testify/assert"
@@ -55,4 +56,20 @@ func TestCreateVirtualizationGroup_RejectsNativeWithoutClient(t *testing.T) {
 	err := c.CreateVirtualizationGroup(context.Background(), pod, nil, resource.RegistryCredentialStore{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "native containers require a container client")
+}
+
+// TestInitTimeout_UsesActiveDeadlineSeconds verifies that initTimeout
+// returns ActiveDeadlineSeconds when set, and DefaultInitTimeout otherwise.
+func TestInitTimeout_UsesActiveDeadlineSeconds(t *testing.T) {
+	deadline := int64(30)
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{ActiveDeadlineSeconds: &deadline},
+	}
+	assert.Equal(t, 30*time.Second, initTimeout(pod))
+}
+
+// TestInitTimeout_DefaultWhenUnset verifies the fallback to DefaultInitTimeout.
+func TestInitTimeout_DefaultWhenUnset(t *testing.T) {
+	pod := &corev1.Pod{}
+	assert.Equal(t, DefaultInitTimeout, initTimeout(pod))
 }

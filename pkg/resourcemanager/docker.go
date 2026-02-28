@@ -284,6 +284,45 @@ func (c *DockerClient) execPostStartAction(ctx context.Context, containerID, pod
 	}
 }
 
+// WaitForContainer blocks until a container reaches a terminal state.
+func (c *DockerClient) WaitForContainer(ctx context.Context, podNs, podName, containerName string) (int, error) {
+	info, ok := c.data.GetContainerInfo(podNs, podName, containerName)
+	if !ok {
+		return -1, errdefs.NotFound("container not found")
+	}
+	if info.Error != nil {
+		return -1, info.Error
+	}
+
+	statusCh, errCh := c.client.ContainerWait(ctx, info.ID, dockercontainer.WaitConditionNotRunning)
+	select {
+	case err := <-errCh:
+		return -1, err
+	case body := <-statusCh:
+		return int(body.StatusCode), nil
+	case <-ctx.Done():
+		return -1, ctx.Err()
+	}
+}
+
+// RemoveContainer removes a single container for a pod.
+func (c *DockerClient) RemoveContainer(ctx context.Context, podNs, podName, containerName string) (err error) {
+	ctx, span := trace.StartSpan(ctx, "DockerClient.RemoveContainer")
+	defer func() {
+		span.SetStatus(err)
+		span.End()
+	}()
+
+	info, ok := c.data.RemoveContainerInfo(podNs, podName, containerName)
+	if !ok {
+		return errdefs.NotFound("container not found")
+	}
+	if info.ID == "" {
+		return nil
+	}
+	return c.client.ContainerRemove(ctx, info.ID, dockercontainer.RemoveOptions{Force: true, RemoveVolumes: true})
+}
+
 // RemoveContainers removes all containers associated with a given pod.
 func (c *DockerClient) RemoveContainers(ctx context.Context, podNs, podName string, gracePeriod int64) (err error) {
 	ctx, span := trace.StartSpan(ctx, "DockerClient.RemoveContainers")

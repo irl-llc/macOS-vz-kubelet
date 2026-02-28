@@ -38,6 +38,8 @@ type ContainerParams struct {
 // In the future, we may evaluate using containerd through colima or similar instead of the heavy docker client library.
 type ContainersClient interface {
 	CreateContainer(ctx context.Context, params ContainerParams) error
+	WaitForContainer(ctx context.Context, podNs, podName, containerName string) (exitCode int, err error)
+	RemoveContainer(ctx context.Context, podNs, podName, containerName string) error
 	RemoveContainers(ctx context.Context, podNs, podName string, gracePeriod int64) error
 	GetContainers(ctx context.Context, podNs, podName string) ([]resource.Container, error)
 	GetContainersListResult(ctx context.Context) (map[types.NamespacedName][]resource.Container, error)

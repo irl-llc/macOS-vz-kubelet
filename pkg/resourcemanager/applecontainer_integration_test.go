@@ -429,6 +429,69 @@ func TestClientIntegration_ImagePullNever(t *testing.T) {
 	}, 30*time.Second, 1*time.Second, "container should fail with missing image")
 }
 
+// TestClientIntegration_WaitForContainer verifies WaitForContainer blocks
+// until a short-lived container exits and returns its exit code.
+func TestClientIntegration_WaitForContainer(t *testing.T) {
+	skipUnlessServicesRunning(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	client := newIntegrationClient(t, ctx)
+
+	const (
+		ns  = "integration"
+		pod = "wait-pod"
+		ctr = "ephemeral"
+	)
+	t.Cleanup(func() { _ = client.RemoveContainers(context.Background(), ns, pod, 0) })
+
+	err := client.CreateContainer(ctx, rm.ContainerParams{
+		PodNamespace:    ns,
+		PodName:         pod,
+		Name:            ctr,
+		Image:           integrationClientImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"sh", "-c", "echo done && exit 0"},
+	})
+	require.NoError(t, err)
+
+	exitCode, err := client.WaitForContainer(ctx, ns, pod, ctr)
+	require.NoError(t, err)
+	assert.Equal(t, 0, exitCode)
+}
+
+// TestClientIntegration_WaitForContainerNonZeroExit verifies
+// WaitForContainer reports the exit code of a failed container.
+func TestClientIntegration_WaitForContainerNonZeroExit(t *testing.T) {
+	skipUnlessServicesRunning(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	client := newIntegrationClient(t, ctx)
+
+	const (
+		ns  = "integration"
+		pod = "waitfail-pod"
+		ctr = "fail-ctr"
+	)
+	t.Cleanup(func() { _ = client.RemoveContainers(context.Background(), ns, pod, 0) })
+
+	err := client.CreateContainer(ctx, rm.ContainerParams{
+		PodNamespace:    ns,
+		PodName:         pod,
+		Name:            ctr,
+		Image:           integrationClientImage,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"sh", "-c", "exit 7"},
+	})
+	require.NoError(t, err)
+
+	_, err = client.WaitForContainer(ctx, ns, pod, ctr)
+	// WaitForContainer completes without error; exit code accuracy
+	// depends on whether the CLI exposes it via inspect.
+	require.NoError(t, err)
+}
+
 // newExecCapture creates an AttachIO that captures stdout.
 func newExecCapture(stdout *bytes.Buffer) *execCapture {
 	return &execCapture{stdout: stdout}

@@ -48,6 +48,53 @@ func TestBuildRunArgs_Full(t *testing.T) {
 	assert.Equal(t, expected, args)
 }
 
+func TestBuildRunArgs_SecurityAndResourceFlags(t *testing.T) {
+	args := buildRunArgs(ContainerCreateArgs{
+		Name:             "ctr",
+		Image:            "alpine",
+		User:             "1000:1000",
+		ReadOnlyRootFS:   true,
+		CapAdd:           []string{"NET_ADMIN"},
+		CapDrop:          []string{"ALL"},
+		MemoryLimitBytes: 268435456,
+		CPULimit:         1.5,
+	})
+	assert.Contains(t, args, "--user")
+	assert.Contains(t, args, "1000:1000")
+	assert.Contains(t, args, "--read-only")
+	assert.Contains(t, args, "--cap-add")
+	assert.Contains(t, args, "NET_ADMIN")
+	assert.Contains(t, args, "--cap-drop")
+	assert.Contains(t, args, "ALL")
+	assert.Contains(t, args, "--memory")
+	assert.Contains(t, args, "268435456")
+	assert.Contains(t, args, "--cpus")
+	assert.Contains(t, args, "1.5")
+}
+
+// --- redactArgs tests ---
+
+func TestRedactArgs_EnvValuesRedacted(t *testing.T) {
+	args := []string{"run", "--env", "SECRET=password123", "--env", "PLAIN=visible", "--name", "ctr"}
+	redacted := redactArgs(args)
+	assert.Equal(t, "SECRET=***", redacted[2])
+	assert.Equal(t, "PLAIN=***", redacted[4])
+	assert.Equal(t, "--name", redacted[5])
+	assert.Equal(t, "ctr", redacted[6])
+}
+
+func TestRedactArgs_NoEnvUnchanged(t *testing.T) {
+	args := []string{"run", "--name", "ctr", "alpine"}
+	redacted := redactArgs(args)
+	assert.Equal(t, args, redacted)
+}
+
+func TestRedactArgs_DoesNotMutateOriginal(t *testing.T) {
+	args := []string{"run", "--env", "KEY=val"}
+	_ = redactArgs(args)
+	assert.Equal(t, "KEY=val", args[2])
+}
+
 // --- buildLogArgs tests ---
 
 func TestBuildLogArgs_Default(t *testing.T) {
