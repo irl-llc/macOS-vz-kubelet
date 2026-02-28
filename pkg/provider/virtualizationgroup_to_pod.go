@@ -7,10 +7,13 @@ import (
 
 	"github.com/agoda-com/macOS-vz-kubelet/internal/utils"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/client"
+	"github.com/agoda-com/macOS-vz-kubelet/pkg/probes"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/resource"
+	"github.com/virtual-kubelet/virtual-kubelet/log"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // virtualizationGroupToPod converts a VirtualizationGroup to a Kubernetes Pod status.
@@ -28,20 +31,65 @@ func (p *MacOSVZProvider) virtualizationGroupToPod(ctx context.Context, vg *clie
 }
 
 // buildPodStatus constructs the pod's status from the provided virtualization group.
-func (p *MacOSVZProvider) buildPodStatus(_ context.Context, vg *client.VirtualizationGroup, pod *corev1.Pod) *corev1.PodStatus {
+func (p *MacOSVZProvider) buildPodStatus(ctx context.Context, vg *client.VirtualizationGroup, pod *corev1.Pod) *corev1.PodStatus {
 	var times statusTimes
 	vmNames := client.VMContainerNames(pod)
 	containerStatuses := buildContainerStatuses(vg, pod, vmNames, &times)
+	readiness := &probes.ContainerReadiness{Results: p.probeRunner.Results}
+	applyProbeResults(ctx, containerStatuses, pod, readiness)
 
 	return &corev1.PodStatus{
-		Phase:                  getPodPhaseFromVirtualizationGroup(vg),
-		Conditions:             getPodConditionsFromVirtualizationGroup(vg, pod, times.firstStart, times.lastUpdate),
-		HostIP:                 p.nodeIPAddress,
-		PodIP:                  podIPAddress(vg),
-		StartTime:              times.startTime(),
-		InitContainerStatuses:  buildInitContainerStatuses(vg, pod, &times),
-		ContainerStatuses:      containerStatuses,
+		Phase:                 getPodPhaseFromVirtualizationGroup(vg),
+		Conditions:            getPodConditionsFromVirtualizationGroup(vg, pod, times.firstStart, times.lastUpdate),
+		HostIP:                p.nodeIPAddress,
+		PodIP:                 podIPAddress(vg),
+		StartTime:             times.startTime(),
+		InitContainerStatuses: buildInitContainerStatuses(vg, pod, &times),
+		ContainerStatuses:     containerStatuses,
 	}
+}
+
+// applyProbeResults overrides Ready/Started on running container statuses using probe results.
+// Only containers with probes configured are affected; others keep their default values.
+func applyProbeResults(ctx context.Context, statuses []corev1.ContainerStatus, pod *corev1.Pod, cr *probes.ContainerReadiness) {
+	nn := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
+	specByName := containerSpecMap(pod)
+	for i := range statuses {
+		if statuses[i].State.Running == nil {
+			continue
+		}
+		spec, ok := specByName[statuses[i].Name]
+		if !ok {
+			continue
+		}
+		applyContainerProbes(ctx, &statuses[i], nn, spec, cr)
+	}
+}
+
+func applyContainerProbes(ctx context.Context, s *corev1.ContainerStatus, nn types.NamespacedName, spec corev1.Container, cr *probes.ContainerReadiness) {
+	if spec.StartupProbe != nil {
+		started := cr.IsStarted(nn, spec)
+		s.Started = &started
+		// Liveness and readiness are gated behind startup probe passing
+		if !started {
+			s.Ready = false
+			return
+		}
+	}
+	if spec.ReadinessProbe != nil {
+		s.Ready = cr.IsReady(nn, spec, s.Ready)
+	}
+	if !cr.IsLive(nn, spec) {
+		log.G(ctx).Warnf("container %s in pod %s failed liveness probe", spec.Name, nn)
+	}
+}
+
+func containerSpecMap(pod *corev1.Pod) map[string]corev1.Container {
+	m := make(map[string]corev1.Container, len(pod.Spec.Containers))
+	for _, c := range pod.Spec.Containers {
+		m[c.Name] = c
+	}
+	return m
 }
 
 type statusTimes struct {
