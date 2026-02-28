@@ -16,8 +16,13 @@ import (
 
 // VirtualizationGroup represents a group of macOS virtual machines and containers.
 type VirtualizationGroup struct {
-	MacOSVirtualMachine resource.VirtualMachine
+	MacOSVirtualMachine resource.VirtualMachine // nil when pod has no VM containers
 	Containers          []resource.Container
+}
+
+// HasVM reports whether this group includes a macOS virtual machine.
+func (vg *VirtualizationGroup) HasVM() bool {
+	return vg.MacOSVirtualMachine != nil
 }
 
 // VzClientInterface defines the methods that a VzClient implementation should provide.
@@ -29,5 +34,5 @@ type VzClientInterface interface {
 	GetContainerLogs(ctx context.Context, namespace, podName, containerName string, opts api.ContainerLogOpts) (io.ReadCloser, error)
 	ExecuteContainerCommand(ctx context.Context, namespace, podName, containerName string, cmd []string, attach api.AttachIO) error
 	AttachToContainer(ctx context.Context, namespace, podName, containerName string, attach api.AttachIO) error
-	GetVirtualizationGroupStats(ctx context.Context, namespace, name string, containers []corev1.Container) ([]stats.ContainerStats, error)
+	GetVirtualizationGroupStats(ctx context.Context, pod *corev1.Pod) ([]stats.ContainerStats, error)
 }

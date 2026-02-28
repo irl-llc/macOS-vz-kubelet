@@ -103,9 +103,14 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 		}
 	}()
 
-	// If the pod has regular containers, the ContainerClient must be available.
-	if len(pod.Spec.Containers) > 1 && c.ContainerClient == nil {
-		return errdefs.InvalidInput("regular containers are not supported")
+	vmNames := VMContainerNames(pod)
+
+	if len(vmNames) > 1 {
+		return errdefs.InvalidInput("at most one VM container per pod is supported")
+	}
+
+	if hasNativeContainers(pod, vmNames) && c.ContainerClient == nil {
+		return errdefs.InvalidInput("native containers require a container client")
 	}
 
 	// Due to the nature of virtual kubelet CreatePod context,
@@ -116,120 +121,149 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 	c.extras.Store(key, extras)
 
 	g := errgroup.Group{}
-	g.Go(func() error {
-		// vz: always assume that first container is macOS container
-		macOSContainer := pod.Spec.Containers[0]
-		vmCreds, _ := creds.ForImage(macOSContainer.Image)
-
-		// Extract and validate CPU and memory requests
-		rl := macOSContainer.Resources.Requests
-		cpu, err := utils.ExtractCPURequest(rl)
-		if err != nil {
-			return errdefs.AsInvalidInput(err)
+	for _, container := range pod.Spec.Containers {
+		if isVMContainer(container.Name, vmNames) {
+			g.Go(c.createVMFunc(ctx, pod, container, extras.rootDir, volData, creds))
+		} else {
+			g.Go(c.createContainerFunc(ctx, pod, container, extras.rootDir, volData, creds))
 		}
-		_, err = vm.ValidateCPUCount(cpu)
-		if err != nil {
-			return errdefs.AsInvalidInput(err)
-		}
-		memorySize, err := utils.ExtractMemoryRequest(rl)
-		if err != nil {
-			return errdefs.AsInvalidInput(err)
-		}
-		_, err = vm.ValidateMemorySize(memorySize)
-		if err != nil {
-			return errdefs.AsInvalidInput(err)
-		}
-
-		mounts, err := volumes.CreateContainerMounts(ctx, volumes.VolumeContext{
-			PodVolRoot:          extras.rootDir,
-			Pod:                 pod,
-			Container:           macOSContainer,
-			ServiceAccountToken: volData.ServiceAccountToken,
-			ConfigMaps:          volData.ConfigMaps,
-			Secrets:             volData.Secrets,
-			PVCs:                volData.PVCs,
-		})
-		if err != nil {
-			return err
-		}
-
-		image := macOSContainer.Image
-		pullPolicy := macOSContainer.ImagePullPolicy
-
-		var postStartAction *resource.ExecAction
-		if lifecycle := macOSContainer.Lifecycle; lifecycle != nil && lifecycle.PostStart != nil && lifecycle.PostStart.Exec != nil {
-			postStartAction = &resource.ExecAction{
-				Command:         lifecycle.PostStart.Exec.Command,
-				TimeoutDuration: PostStartCommandTimeout,
-			}
-		}
-
-		return c.MacOSClient.CreateVirtualMachine(ctx, rm.VirtualMachineParams{
-			UID:              string(pod.UID),
-			Image:            image,
-			Namespace:        pod.Namespace,
-			Name:             pod.Name,
-			ContainerName:    macOSContainer.Name,
-			CPU:              cpu,
-			MemorySize:       memorySize,
-			Mounts:           mounts,
-			Env:              macOSContainer.Env,
-			PostStartAction:  postStartAction,
-			IgnoreImageCache: pullPolicy == corev1.PullAlways,
-			RegistryCreds:    vmCreds,
-		})
-	})
-
-	for i := 1; i < len(pod.Spec.Containers); i++ {
-		container := pod.Spec.Containers[i]
-		g.Go(func() error {
-			containerCreds, _ := creds.ForImage(container.Image)
-
-			mounts, err := volumes.CreateContainerMounts(ctx, volumes.VolumeContext{
-				PodVolRoot:          extras.rootDir,
-				Pod:                 pod,
-				Container:           container,
-				ServiceAccountToken: volData.ServiceAccountToken,
-				ConfigMaps:          volData.ConfigMaps,
-				Secrets:             volData.Secrets,
-				PVCs:                volData.PVCs,
-			})
-			if err != nil {
-				return err
-			}
-
-			var postStartAction *resource.ExecAction
-			if lifecycle := container.Lifecycle; lifecycle != nil && lifecycle.PostStart != nil && lifecycle.PostStart.Exec != nil {
-				postStartAction = &resource.ExecAction{
-					Command:         lifecycle.PostStart.Exec.Command,
-					TimeoutDuration: PostStartCommandTimeout,
-				}
-			}
-
-			return c.ContainerClient.CreateContainer(
-				ctx,
-				rm.ContainerParams{
-					PodNamespace:    pod.Namespace,
-					PodName:         pod.Name,
-					Name:            container.Name,
-					Image:           container.Image,
-					ImagePullPolicy: container.ImagePullPolicy,
-					Mounts:          mounts,
-					Env:             container.Env,
-					Command:         container.Command,
-					Args:            container.Args,
-					WorkingDir:      container.WorkingDir,
-					TTY:             container.TTY,
-					Stdin:           container.Stdin,
-					StdinOnce:       container.StdinOnce,
-					PostStartAction: postStartAction,
-					RegistryCreds:   containerCreds,
-				},
-			)
-		})
 	}
 
 	return g.Wait()
+}
+
+func (c *VzClientAPIs) createVMFunc(
+	ctx context.Context, pod *corev1.Pod, ctr corev1.Container,
+	rootDir string, volData *volumes.PodVolumeData, creds resource.RegistryCredentialStore,
+) func() error {
+	return func() error {
+		return c.createVM(ctx, pod, ctr, rootDir, volData, creds)
+	}
+}
+
+func (c *VzClientAPIs) createVM(
+	ctx context.Context, pod *corev1.Pod, ctr corev1.Container,
+	rootDir string, volData *volumes.PodVolumeData, creds resource.RegistryCredentialStore,
+) error {
+	vmCreds, _ := creds.ForImage(ctr.Image)
+	vmParams, err := buildVMParams(ctx, pod, ctr, rootDir, volData, vmCreds)
+	if err != nil {
+		return err
+	}
+	return c.MacOSClient.CreateVirtualMachine(ctx, vmParams)
+}
+
+func buildVMParams(
+	ctx context.Context, pod *corev1.Pod, ctr corev1.Container,
+	rootDir string, volData *volumes.PodVolumeData, vmCreds resource.RegistryCredentials,
+) (rm.VirtualMachineParams, error) {
+	cpu, memorySize, err := validateVMResources(ctr)
+	if err != nil {
+		return rm.VirtualMachineParams{}, err
+	}
+
+	mounts, err := resolveMounts(ctx, pod, ctr, rootDir, volData)
+	if err != nil {
+		return rm.VirtualMachineParams{}, err
+	}
+
+	return rm.VirtualMachineParams{
+		UID:              string(pod.UID),
+		Image:            ctr.Image,
+		Namespace:        pod.Namespace,
+		Name:             pod.Name,
+		ContainerName:    ctr.Name,
+		CPU:              cpu,
+		MemorySize:       memorySize,
+		Mounts:           mounts,
+		Env:              ctr.Env,
+		PostStartAction:  extractPostStart(ctr),
+		IgnoreImageCache: ctr.ImagePullPolicy == corev1.PullAlways,
+		RegistryCreds:    vmCreds,
+	}, nil
+}
+
+func validateVMResources(ctr corev1.Container) (uint, uint64, error) {
+	rl := ctr.Resources.Requests
+	cpu, err := utils.ExtractCPURequest(rl)
+	if err != nil {
+		return 0, 0, errdefs.AsInvalidInput(err)
+	}
+	if _, err = vm.ValidateCPUCount(cpu); err != nil {
+		return 0, 0, errdefs.AsInvalidInput(err)
+	}
+	memorySize, err := utils.ExtractMemoryRequest(rl)
+	if err != nil {
+		return 0, 0, errdefs.AsInvalidInput(err)
+	}
+	if _, err = vm.ValidateMemorySize(memorySize); err != nil {
+		return 0, 0, errdefs.AsInvalidInput(err)
+	}
+	return cpu, memorySize, nil
+}
+
+func (c *VzClientAPIs) createContainerFunc(
+	ctx context.Context, pod *corev1.Pod, ctr corev1.Container,
+	rootDir string, volData *volumes.PodVolumeData, creds resource.RegistryCredentialStore,
+) func() error {
+	return func() error {
+		return c.createNativeContainer(ctx, pod, ctr, rootDir, volData, creds)
+	}
+}
+
+func (c *VzClientAPIs) createNativeContainer(
+	ctx context.Context, pod *corev1.Pod, ctr corev1.Container,
+	rootDir string, volData *volumes.PodVolumeData, creds resource.RegistryCredentialStore,
+) error {
+	containerCreds, _ := creds.ForImage(ctr.Image)
+	mounts, err := resolveMounts(ctx, pod, ctr, rootDir, volData)
+	if err != nil {
+		return err
+	}
+
+	return c.ContainerClient.CreateContainer(ctx, rm.ContainerParams{
+		PodNamespace:    pod.Namespace,
+		PodName:         pod.Name,
+		Name:            ctr.Name,
+		Image:           ctr.Image,
+		ImagePullPolicy: ctr.ImagePullPolicy,
+		Mounts:          mounts,
+		Env:             ctr.Env,
+		Command:         ctr.Command,
+		Args:            ctr.Args,
+		WorkingDir:      ctr.WorkingDir,
+		TTY:             ctr.TTY,
+		Stdin:           ctr.Stdin,
+		StdinOnce:       ctr.StdinOnce,
+		PostStartAction: extractPostStart(ctr),
+		RegistryCreds:   containerCreds,
+	})
+}
+
+func resolveMounts(
+	ctx context.Context, pod *corev1.Pod, ctr corev1.Container,
+	rootDir string, volData *volumes.PodVolumeData,
+) ([]volumes.Mount, error) {
+	return volumes.CreateContainerMounts(ctx, volumes.VolumeContext{
+		PodVolRoot:          rootDir,
+		Pod:                 pod,
+		Container:           ctr,
+		ServiceAccountToken: volData.ServiceAccountToken,
+		ConfigMaps:          volData.ConfigMaps,
+		Secrets:             volData.Secrets,
+		PVCs:                volData.PVCs,
+	})
+}
+
+func extractPostStart(ctr corev1.Container) *resource.ExecAction {
+	lc := ctr.Lifecycle
+	if lc == nil || lc.PostStart == nil || lc.PostStart.Exec == nil {
+		return nil
+	}
+	return &resource.ExecAction{
+		Command:         lc.PostStart.Exec.Command,
+		TimeoutDuration: PostStartCommandTimeout,
+	}
 }
 
 // DeleteVirtualizationGroup deletes an existing virtualization group specified by namespace and name.
@@ -333,7 +367,7 @@ func (c *VzClientAPIs) GetVirtualizationGroup(ctx context.Context, namespace, na
 	}()
 
 	var containers []resource.Container
-	var vm resource.MacOSVirtualMachine
+	var vmResult resource.VirtualMachine
 	var containerErr, vmErr error
 
 	// Fetch containers
@@ -347,13 +381,11 @@ func (c *VzClientAPIs) GetVirtualizationGroup(ctx context.Context, namespace, na
 	}
 
 	// Fetch virtual machine
-	vm, vmErr = c.MacOSClient.GetVirtualMachine(ctx, namespace, name)
-	if vmErr != nil && !errdefs.IsNotFound(vmErr) {
-		if err != nil {
-			err = errors.Join(err, vmErr)
-		} else {
-			err = vmErr
-		}
+	vm, vmErr := c.MacOSClient.GetVirtualMachine(ctx, namespace, name)
+	if vmErr == nil {
+		vmResult = &vm
+	} else if !errdefs.IsNotFound(vmErr) {
+		err = errors.Join(err, vmErr)
 	}
 
 	// If both clients return not found errors, return a combined not found error
@@ -361,18 +393,9 @@ func (c *VzClientAPIs) GetVirtualizationGroup(ctx context.Context, namespace, na
 		return nil, errVirtualizationGroupNotFound
 	}
 
-	// If both clients return errors, combine them
-	if containerErr != nil && vmErr != nil {
-		return &VirtualizationGroup{
-			Containers:          containers,
-			MacOSVirtualMachine: &vm,
-		}, errors.Join(containerErr, vmErr)
-	}
-
-	// Return the virtualization group with any existing values
 	return &VirtualizationGroup{
 		Containers:          containers,
-		MacOSVirtualMachine: &vm,
+		MacOSVirtualMachine: vmResult,
 	}, err
 }
 
@@ -428,8 +451,9 @@ func (c *VzClientAPIs) GetVirtualizationGroupListResult(ctx context.Context) (l 
 
 	// Combine the results
 	for k, v := range vms {
+		vmCopy := v // capture loop variable
 		l[k] = &VirtualizationGroup{
-			MacOSVirtualMachine: &v,
+			MacOSVirtualMachine: &vmCopy,
 		}
 	}
 
@@ -491,31 +515,34 @@ func (c *VzClientAPIs) AttachToContainer(ctx context.Context, namespace, podName
 	return c.MacOSClient.ExecInVirtualMachine(ctx, namespace, podName, nil, attach)
 }
 
-func (c *VzClientAPIs) GetVirtualizationGroupStats(ctx context.Context, namespace, name string, containers []corev1.Container) (cs []stats.ContainerStats, err error) {
+func (c *VzClientAPIs) GetVirtualizationGroupStats(ctx context.Context, pod *corev1.Pod) (cs []stats.ContainerStats, err error) {
 	ctx, span := trace.StartSpan(ctx, "VZClient.GetVirtualizationGroupStats")
 	defer func() {
 		span.SetStatus(err)
 		span.End()
 	}()
 
-	vmStats, err := c.MacOSClient.GetVirtualMachineStats(ctx, namespace, name)
-	if err != nil {
-		return nil, err
-	}
-
-	// vz: always assume that first container is macOS container
-	vmStats.Name = containers[0].Name
-	cs = append(cs, vmStats)
-
-	for _, container := range containers[1:] {
-		containerStats, err := c.ContainerClient.GetContainerStats(ctx, namespace, name, container.Name)
+	vmNames := VMContainerNames(pod)
+	for _, ctr := range pod.Spec.Containers {
+		s, err := c.containerStats(ctx, pod.Namespace, pod.Name, ctr.Name, vmNames)
 		if err != nil {
 			return nil, err
 		}
-		cs = append(cs, containerStats)
+		cs = append(cs, s)
 	}
-
 	return cs, nil
+}
+
+func (c *VzClientAPIs) containerStats(ctx context.Context, ns, pod, ctrName string, vmNames map[string]bool) (stats.ContainerStats, error) {
+	if !isVMContainer(ctrName, vmNames) && c.ContainerClient != nil {
+		return c.ContainerClient.GetContainerStats(ctx, ns, pod, ctrName)
+	}
+	s, err := c.MacOSClient.GetVirtualMachineStats(ctx, ns, pod)
+	if err != nil {
+		return stats.ContainerStats{}, err
+	}
+	s.Name = ctrName
+	return s, nil
 }
 
 // getPodVolumeRoot returns the root path for the volumes of a pod
