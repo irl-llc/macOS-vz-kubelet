@@ -327,6 +327,9 @@ func (c *AppleContainerClient) inspectOne(ctx context.Context, name string, info
 		return ctr
 	}
 	ctr.State = state
+	if state.Status == resource.ContainerStatusRunning {
+		ctr.IPAddress, _ = c.cli.InspectContainerIP(ctx, info.ID)
+	}
 	return ctr
 }
 
@@ -429,6 +432,16 @@ func (c *AppleContainerClient) computeNanoCores(podNs, podName, container string
 	return &rate
 }
 
+// CreatePodNetwork creates a per-pod vmnet network.
+func (c *AppleContainerClient) CreatePodNetwork(ctx context.Context, name string) error {
+	return c.cli.CreateNetwork(ctx, name)
+}
+
+// DeletePodNetwork removes a per-pod vmnet network.
+func (c *AppleContainerClient) DeletePodNetwork(ctx context.Context, name string) error {
+	return c.cli.RemoveNetwork(ctx, name)
+}
+
 // containerCreateArgs builds the CLI arguments for container creation.
 func containerCreateArgs(params ContainerParams, containerName string) ContainerCreateArgs {
 	args := ContainerCreateArgs{
@@ -441,6 +454,8 @@ func containerCreateArgs(params ContainerParams, containerName string) Container
 		WorkingDir: params.WorkingDir,
 		TTY:        params.TTY,
 		Stdin:      params.Stdin,
+		Network:    params.Network,
+		DNS:        params.DNS,
 	}
 	applySecurityContext(&args, params.SecurityContext)
 	applyResources(&args, params.Resources)

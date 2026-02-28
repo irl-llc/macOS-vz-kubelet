@@ -229,12 +229,22 @@ func isTerminal(s resource.ContainerStatus) bool {
 	return s.IsTerminal()
 }
 
-// podIPAddress returns the pod's IP from the VM, or empty if no VM exists.
+// podIPAddress returns the pod's IP — from the VM if present, otherwise the
+// first container with a vmnet IP address.
 func podIPAddress(vg *client.VirtualizationGroup) string {
-	if !vg.HasVM() {
-		return ""
+	if vg.HasVM() {
+		return vg.MacOSVirtualMachine.IPAddress()
 	}
-	return vg.MacOSVirtualMachine.IPAddress()
+	return firstContainerIP(vg.Containers)
+}
+
+func firstContainerIP(containers []resource.Container) string {
+	for _, ctr := range containers {
+		if ctr.IPAddress != "" {
+			return ctr.IPAddress
+		}
+	}
+	return ""
 }
 
 // vmToContainerState converts the macOS VM state to a Kubernetes container state.

@@ -47,7 +47,8 @@ type ContainerState struct {
 
 // Container represents a single container with its ID, name, and state.
 type Container struct {
-	ID    string
-	Name  string
-	State ContainerState
+	ID        string
+	Name      string
+	State     ContainerState
+	IPAddress string // vmnet IP address (populated from inspect)
 }

@@ -203,6 +203,8 @@ func TestGetContainers_WithTracked(t *testing.T) {
 		Return("id-1", nil)
 	cli.On("InspectContainer", mock.Anything, "id-1").
 		Return(resource.ContainerState{Status: resource.ContainerStatusRunning}, nil)
+	cli.On("InspectContainerIP", mock.Anything, "id-1").
+		Return("192.168.64.5", nil)
 
 	rec.On("PullingImage", mock.Anything, mock.Anything, mock.Anything).Return()
 	rec.On("PulledImage", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()

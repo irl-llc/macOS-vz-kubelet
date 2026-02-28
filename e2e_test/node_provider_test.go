@@ -90,7 +90,7 @@ func newProviderFactory(t *testing.T, ctx context.Context, kcl *kubernetes.Clien
 		containerClient, err := rm.NewDockerClient(ctx, dockerCl, eventRecorder)
 		require.NoError(t, err)
 
-		vzClient := client.NewVzClientAPIs(ctx, eventRecorder, "", cachePath, containerClient)
+		vzClient := client.NewVzClientAPIs(ctx, eventRecorder, "", cachePath, "", containerClient)
 
 		providerConfig := provider.MacOSVZProviderConfig{
 			NodeName:           nodeName,

@@ -258,6 +258,53 @@ func (_c *MockCLIExecutor_CreateAndStartContainer_Call) RunAndReturn(run func(co
 	return _c
 }
 
+// CreateNetwork provides a mock function with given fields: ctx, name
+func (_m *MockCLIExecutor) CreateNetwork(ctx context.Context, name string) error {
+	ret := _m.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for CreateNetwork")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = rf(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockCLIExecutor_CreateNetwork_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'CreateNetwork'
+type MockCLIExecutor_CreateNetwork_Call struct {
+	*mock.Call
+}
+
+// CreateNetwork is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockCLIExecutor_Expecter) CreateNetwork(ctx interface{}, name interface{}) *MockCLIExecutor_CreateNetwork_Call {
+	return &MockCLIExecutor_CreateNetwork_Call{Call: _e.mock.On("CreateNetwork", ctx, name)}
+}
+
+func (_c *MockCLIExecutor_CreateNetwork_Call) Run(run func(ctx context.Context, name string)) *MockCLIExecutor_CreateNetwork_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string))
+	})
+	return _c
+}
+
+func (_c *MockCLIExecutor_CreateNetwork_Call) Return(_a0 error) *MockCLIExecutor_CreateNetwork_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockCLIExecutor_CreateNetwork_Call) RunAndReturn(run func(context.Context, string) error) *MockCLIExecutor_CreateNetwork_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // ExecInContainer provides a mock function with given fields: ctx, name, cmd, attach
 func (_m *MockCLIExecutor) ExecInContainer(ctx context.Context, name string, cmd []string, attach api.AttachIO) error {
 	ret := _m.Called(ctx, name, cmd, attach)
@@ -360,6 +407,63 @@ func (_c *MockCLIExecutor_InspectContainer_Call) Return(_a0 resource.ContainerSt
 }
 
 func (_c *MockCLIExecutor_InspectContainer_Call) RunAndReturn(run func(context.Context, string) (resource.ContainerState, error)) *MockCLIExecutor_InspectContainer_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// InspectContainerIP provides a mock function with given fields: ctx, id
+func (_m *MockCLIExecutor) InspectContainerIP(ctx context.Context, id string) (string, error) {
+	ret := _m.Called(ctx, id)
+
+	if len(ret) == 0 {
+		panic("no return value specified for InspectContainerIP")
+	}
+
+	var r0 string
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string) (string, error)); ok {
+		return rf(ctx, id)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string) string); ok {
+		r0 = rf(ctx, id)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = rf(ctx, id)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockCLIExecutor_InspectContainerIP_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'InspectContainerIP'
+type MockCLIExecutor_InspectContainerIP_Call struct {
+	*mock.Call
+}
+
+// InspectContainerIP is a helper method to define mock.On call
+//   - ctx context.Context
+//   - id string
+func (_e *MockCLIExecutor_Expecter) InspectContainerIP(ctx interface{}, id interface{}) *MockCLIExecutor_InspectContainerIP_Call {
+	return &MockCLIExecutor_InspectContainerIP_Call{Call: _e.mock.On("InspectContainerIP", ctx, id)}
+}
+
+func (_c *MockCLIExecutor_InspectContainerIP_Call) Run(run func(ctx context.Context, id string)) *MockCLIExecutor_InspectContainerIP_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string))
+	})
+	return _c
+}
+
+func (_c *MockCLIExecutor_InspectContainerIP_Call) Return(_a0 string, _a1 error) *MockCLIExecutor_InspectContainerIP_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockCLIExecutor_InspectContainerIP_Call) RunAndReturn(run func(context.Context, string) (string, error)) *MockCLIExecutor_InspectContainerIP_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -562,6 +666,53 @@ func (_c *MockCLIExecutor_RemoveImage_Call) Return(_a0 error) *MockCLIExecutor_R
 }
 
 func (_c *MockCLIExecutor_RemoveImage_Call) RunAndReturn(run func(context.Context, string) error) *MockCLIExecutor_RemoveImage_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// RemoveNetwork provides a mock function with given fields: ctx, name
+func (_m *MockCLIExecutor) RemoveNetwork(ctx context.Context, name string) error {
+	ret := _m.Called(ctx, name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RemoveNetwork")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, string) error); ok {
+		r0 = rf(ctx, name)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// MockCLIExecutor_RemoveNetwork_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RemoveNetwork'
+type MockCLIExecutor_RemoveNetwork_Call struct {
+	*mock.Call
+}
+
+// RemoveNetwork is a helper method to define mock.On call
+//   - ctx context.Context
+//   - name string
+func (_e *MockCLIExecutor_Expecter) RemoveNetwork(ctx interface{}, name interface{}) *MockCLIExecutor_RemoveNetwork_Call {
+	return &MockCLIExecutor_RemoveNetwork_Call{Call: _e.mock.On("RemoveNetwork", ctx, name)}
+}
+
+func (_c *MockCLIExecutor_RemoveNetwork_Call) Run(run func(ctx context.Context, name string)) *MockCLIExecutor_RemoveNetwork_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string))
+	})
+	return _c
+}
+
+func (_c *MockCLIExecutor_RemoveNetwork_Call) Return(_a0 error) *MockCLIExecutor_RemoveNetwork_Call {
+	_c.Call.Return(_a0)
+	return _c
+}
+
+func (_c *MockCLIExecutor_RemoveNetwork_Call) RunAndReturn(run func(context.Context, string) error) *MockCLIExecutor_RemoveNetwork_Call {
 	_c.Call.Return(run)
 	return _c
 }
